@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import re
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -67,7 +68,18 @@ def general_answer(question, facts, history=None):
                 return None
             return content.strip()
         except HTTPError as error:
-            logger.warning('Groq svarade med HTTP %s. Kontrollera GROQ_API_KEY och gratisgränsen.', error.code)
+            # Endast maskinläsbara felkoder: logga aldrig svaret, frågan eller nyckeln.
+            details = {}
+            try:
+                details = json.loads(error.read(4096)).get('error', {})
+            except (ValueError, UnicodeError, OSError, AttributeError):
+                pass
+            if not isinstance(details, dict):
+                details = {}
+            safe = lambda item: re.sub(r'[^a-zA-Z0-9_.-]', '', str(item or ''))[:80]
+            logger.warning('Groq svarade med HTTP %s; felkod=%s; typ=%s.',
+                           error.code, safe(details.get('code')) or 'saknas',
+                           safe(details.get('type')) or 'saknas')
             return None
         except (URLError, TimeoutError, ValueError, OSError, AttributeError, IndexError) as error:
             logger.warning('Groq-anrop misslyckades: %s.', type(error).__name__)
