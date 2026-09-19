@@ -9,7 +9,7 @@ from time import sleep
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from fixtures import COMPETITIONS, PROVIDER, fixture_time, normalize_team, read_fixtures, read_venues
+from fixtures import COMPETITIONS, CUP_NAMES, PROVIDER, fixture_time, normalize_team, read_fixtures, read_venues
 
 ROOT = Path(__file__).resolve().parent
 
@@ -20,7 +20,7 @@ def fetch_competition(code, token):
     request = Request(url, headers={'X-Auth-Token': token, 'User-Agent': 'Matchorakel/5.0'})
     with urlopen(request, timeout=25) as response:
         payload = json.load(response)
-    if not isinstance(payload.get('matches'), list):
+    if not isinstance(payload, dict) or not isinstance(payload.get('matches'), list):
         raise ValueError('API:et skickade ingen matchlista.')
     stamp = datetime.now(timezone.utc).isoformat()
     return [{
@@ -30,8 +30,9 @@ def fetch_competition(code, token):
         'status': item.get('status'), 'synced_at': stamp, 'source': PROVIDER,
         'match_id': item.get('id'), 'stage': item.get('stage'),
         'score': (item.get('score') or {}).get('fullTime'),
-    } for item in payload['matches'] if item.get('utcDate') and
-        (item.get('homeTeam') or {}).get('name') and (item.get('awayTeam') or {}).get('name')]
+    } for item in payload['matches'] if isinstance(item, dict) and item.get('utcDate') and
+        isinstance(item.get('homeTeam'), dict) and isinstance(item.get('awayTeam'), dict) and
+        item['homeTeam'].get('name') and item['awayTeam'].get('name')]
 
 
 def fetch_team_venues(code, token):
@@ -39,12 +40,12 @@ def fetch_team_venues(code, token):
     request = Request(url, headers={'X-Auth-Token': token, 'User-Agent': 'Matchorakel/7.0'})
     with urlopen(request, timeout=25) as response:
         payload = json.load(response)
-    if not isinstance(payload.get('teams'), list):
+    if not isinstance(payload, dict) or not isinstance(payload.get('teams'), list):
         raise ValueError('API:et skickade ingen laglista.')
     stamp = datetime.now(timezone.utc).isoformat()
     return {normalize_team(team['name'], code): {
         'venue': team['venue'], 'source': PROVIDER + ' · lagprofil', 'synced_at': stamp,
-    } for team in payload['teams'] if team.get('name') and team.get('venue')}
+    } for team in payload['teams'] if isinstance(team, dict) and team.get('name') and team.get('venue')}
 
 
 def api_error(error, token):
@@ -86,7 +87,8 @@ def main(league=None, token=None, logger=print):
         try:
             latest = fetch_competition(code, token)
         except HTTPError as error:
-            logger(f'{code}: kunde inte hämta schemat ({api_error(error, token)}). Befintligt schema behålls.')
+            reason = ' Den här cupen kan kräva en annan åtkomstnivå hos datakällan.' if code in CUP_NAMES and error.code in (401, 403, 404) else ''
+            logger(f'{code}: kunde inte hämta schemat ({api_error(error, token)}). Befintligt schema behålls.{reason}')
             continue
         except (URLError, TimeoutError, ValueError) as error:
             logger(f'{code}: kunde inte hämta schemat ({error}). Befintligt schema behålls.')
@@ -98,15 +100,16 @@ def main(league=None, token=None, logger=print):
         matches = [item for item in matches if item.get('league') != code] + list(unique.values())
         save_fixtures(matches, venues)
         success += 1
-        sleep(7)
-        try:
-            venues[code] = fetch_team_venues(code, token)
-            save_fixtures(matches, venues)
-            logger(f'{code}: {len(venues[code])} möjliga hemmaarenor från lagprofiler (inte bekräftade matcharenor).')
-        except HTTPError as error:
-            logger(f'{code}: inga lagarenor hämtades ({api_error(error, token)}). Matchschemat har sparats.')
-        except (URLError, TimeoutError, ValueError) as error:
-            logger(f'{code}: inga lagarenor hämtades ({error}). Matchschemat har sparats.')
+        if code not in CUP_NAMES:
+            sleep(7)
+            try:
+                venues[code] = fetch_team_venues(code, token)
+                save_fixtures(matches, venues)
+                logger(f'{code}: {len(venues[code])} möjliga hemmaarenor från lagprofiler (inte bekräftade matcharenor).')
+            except HTTPError as error:
+                logger(f'{code}: inga lagarenor hämtades ({api_error(error, token)}). Matchschemat har sparats.')
+            except (URLError, TimeoutError, ValueError) as error:
+                logger(f'{code}: inga lagarenor hämtades ({error}). Matchschemat har sparats.')
         now = datetime.now(timezone.utc)
         upcoming = sum(item['status'] in ('SCHEDULED', 'TIMED') and
                        (fixture_time(item) or now) > now for item in latest)
@@ -119,5 +122,5 @@ def main(league=None, token=None, logger=print):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Hämta aktuella spelscheman från football-data.org')
-    parser.add_argument('--league', choices=COMPETITIONS, help='Hämta endast denna liga (UCL för Champions League)')
+    parser.add_argument('--league', choices=COMPETITIONS, help='Hämta endast en liga eller cup, till exempel UCL, FAC, CDR eller EL')
     main(parser.parse_args().league)

@@ -1,4 +1,4 @@
-"""Lokal webbserver med en gemensam chatt för fem ligor."""
+"""Lokal webbserver med en gemensam chatt för ligor och cuper."""
 import json
 import math
 import os
@@ -15,10 +15,11 @@ import pandas as pd
 from flask import Flask, jsonify, render_template, request
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from conversation import friendly_reply, football_followup, parts_of_question, suggestions
+from conversation import football_followup, parts_of_question, suggestions
 from football import ALIASES, FEATURES, LEAGUES, clean_name, feature_row, find_teams, load_matches, parse_teams, recent_form, team_display
-from fixtures import fixture_public, home_venue, normalize_team, read_fixtures, upcoming_fixtures
-from language_chat import general_answer, language_status
+from fixtures import CUP_ALIASES, CUP_NAMES, fixture_public, home_venue, normalize_team, read_fixtures, upcoming_fixtures
+from goal_model import GoalModel
+from language_chat import connection_error_code, connection_health, general_answer, language_status
 from player_data import player_summary
 
 ROOT = Path(__file__).resolve().parent
@@ -70,6 +71,22 @@ def predict_match(home_team: str, away_team: str, league='PL') -> dict:
     probability = model.predict_proba(pd.DataFrame([features], columns=feature_names))[0]
     values = dict(zip(model.classes_, probability))
     goal_markets = {}
+    # En exakt resultatrad är en osäker punktprognos från målmodellen.
+    # Den validerade 1X2-modellen nedan får behålla sina egna sannolikheter.
+    score_source = 'Poissonmodell för mål · enskilda resultat ej separat validerade'
+    if (saved.get('goal_model') and saved.get('goal_features') and
+            hasattr(saved['goal_model'], 'home_') and hasattr(saved['goal_model'], 'away_')):
+        goal_rows = pd.DataFrame([features], columns=saved['goal_features'])
+        home_rate = float(saved['goal_model'].home_.predict(goal_rows)[0])
+        away_rate = float(saved['goal_model'].away_.predict(goal_rows)[0])
+    else:
+        home_rate = (features['home_scored'] + features['away_conceded']) / 10
+        away_rate = (features['away_scored'] + features['home_conceded']) / 10
+        score_source = 'Grov uppskattning från lagens senaste fem matcher · ej validerad'
+    home_rate, away_rate = (max(.05, min(8., rate)) for rate in (home_rate, away_rate))
+    score_matrix = GoalModel.matrix(home_rate, away_rate)
+    most_likely = max(((h, a) for h in range(8) for a in range(8)),
+                      key=lambda score: score_matrix[score[0], score[1]])
     if saved.get('goal_model') and saved.get('goal_market_enabled'):
         raw = saved['goal_model'].goal_markets(pd.DataFrame([features], columns=saved['goal_features']))[0]
         goal_markets = {market: round(raw[market] * 100, 1)
@@ -79,6 +96,9 @@ def predict_match(home_team: str, away_team: str, league='PL') -> dict:
         'league': league, 'league_name': LEAGUES[league]['name'],
         'probabilities': {label: round(float(values[label]) * 100, 1) for label in ('H', 'D', 'A')},
         'goal_markets': goal_markets,
+        'scoreline': {'home': most_likely[0], 'away': most_likely[1],
+                      'home_expected': round(home_rate, 2), 'away_expected': round(away_rate, 2),
+                      'source': score_source},
         'as_of': saved['last_match'], 'model': saved['model_name'],
         'features': {name: features[name] for name in FEATURES},
         'additional_factors': {name: features[name] for name in ('home_elo', 'away_elo', 'home_rest_days', 'away_rest_days')
@@ -100,7 +120,7 @@ def text_response(message, league=None, home=None, away=None):
 
 def insight(title, summary, league, cards, teams=None, home=None, away=None, as_of=None):
     return {'kind': 'insight', 'title': title, 'summary': summary,
-            'league': league, 'league_name': 'Champions League' if league == 'UCL' else LEAGUES[league]['name'],
+            'league': league, 'league_name': CUP_NAMES.get(league, LEAGUES.get(league, {}).get('name')),
             'cards': cards, 'teams': teams or [], 'as_of': as_of,
             'context': context_for(league, home, away)}
 
@@ -176,7 +196,7 @@ def team_snapshot(saved, team, league):
 
 
 def fixture_answer(matches, league, home=None, away=None, title='Kommande matcher', summary=None):
-    label = 'Champions League' if league == 'UCL' else LEAGUES[league]['name']
+    label = CUP_NAMES.get(league, LEAGUES.get(league, {}).get('name'))
     return {'kind': 'fixtures', 'league': league, 'league_name': label,
             'fixtures': [fixture_public(item, ROOT) for item in matches[:5]], 'title': title, 'summary': summary,
             'context': context_for(league, home, away)}
@@ -213,7 +233,7 @@ def unverified_cross_league_pair(message, context=None):
     if len(found) == 2 and found[0][1] != found[1][1]:
         found.sort()
         return tuple(team_display(key, code) for _, code, key in found)
-    if isinstance(context, dict) and context.get('league') == 'UCL' and context.get('home') and context.get('away'):
+    if isinstance(context, dict) and context.get('league') in CUP_NAMES and context.get('home') and context.get('away'):
         return context['home'], context['away']
     return None
 
@@ -227,12 +247,12 @@ def unverified_ucl_answer(message, context=None):
                           'venue': None, 'status': None}], message)
 
 
-def ucl_evidence(matches, question):
-    """Historiska observationer från ligorna; inga UCL-odds eller säkra utfall."""
+def ucl_evidence(matches, question, competition="UCL"):
+    """Historiska observationer från ligorna; inga cup-odds eller säkra utfall."""
     fixture = matches[0]
     participants = []
     for name in (fixture['home'], fixture['away']):
-        key = normalize_team(name, 'UCL')
+        key = normalize_team(name, competition)
         for code in LEAGUES:
             if not model_path(code).exists():
                 continue
@@ -248,29 +268,53 @@ def ucl_evidence(matches, question):
         if not fixture.get('utc_date'):
             return text_response('Jag kan prata om ' + fixture['home'] + ' och ' + fixture['away'] +
                                  ', men jag har inget verifierat matchdatum eller arena på servern just nu.',
-                                 'UCL', fixture['home'], fixture['away'])
-        return fixture_answer(matches, 'UCL', fixture['home'], fixture['away'],
+                                 competition, fixture['home'], fixture['away'])
+        return fixture_answer(matches, competition, fixture['home'], fixture['away'],
                               title='Tid och plats för matchen', summary='Matchdatum kommer från spelschemat. Lagets vanliga arena kan visas som trolig när matchens arena inte är bekräftad.')
     if player_query:
         if not fixture.get('utc_date'):
             return text_response('Jag saknar verifierad spelarstatistik och ett bekräftat schema för ' +
                                  fixture['home'] + ' och ' + fixture['away'] + '.',
-                                 'UCL', fixture['home'], fixture['away'])
-        return fixture_answer(matches, 'UCL', fixture['home'], fixture['away'],
-                              title='Spelarfrågan', summary='Jag har inte verifierade spelarsiffror eller startelvor för den här Champions League-matchen. Därför kan jag inte uppskatta spelarens skott, mål, assist eller kort. Matchens publicerade tid visas nedan.')
+                                 competition, fixture['home'], fixture['away'])
+        return fixture_answer(matches, competition, fixture['home'], fixture['away'],
+                              title='Spelarfrågan', summary='Jag har inte verifierade spelarsiffror eller startelvor för cupmatchen. Därför kan jag inte uppskatta spelarens skott, mål, assist eller kort. Matchens publicerade tid visas nedan.')
     if any(term in normalized for term in ('skada', 'skadad', 'avstangd', 'startelva')):
         if not fixture.get('utc_date'):
             return text_response('Jag har inga verifierade skador, startelvor eller matchdatum för ' +
                                  fixture['home'] + ' och ' + fixture['away'] + '.',
-                                 'UCL', fixture['home'], fixture['away'])
-        return fixture_answer(matches, 'UCL', fixture['home'], fixture['away'],
+                                 competition, fixture['home'], fixture['away'])
+        return fixture_answer(matches, competition, fixture['home'], fixture['away'],
                               title='Spelarfrånvaro', summary='Jag har ingen verifierad aktuell skade- eller startelvsinformation för matchen och kan inte räkna in den. Kontrollera lagens bekräftade uppgifter nära avspark.')
     if len(participants) < 2:
         if not fixture.get('utc_date'):
             return text_response('Jag saknar verifierat schema och tillräcklig ligahistorik för båda lagen.',
-                                 'UCL', fixture['home'], fixture['away'])
-        return fixture_answer(matches, 'UCL', fixture['home'], fixture['away'],
+                                 competition, fixture['home'], fixture['away'])
+        return fixture_answer(matches, competition, fixture['home'], fixture['away'],
                               title='Underlag saknas för matchanalys', summary='Jag har schemat, men saknar tränad historik för båda lagen. Kör py fetch_data.py och py train_model.py för lagstatistik. Jag kan inte avgöra vad som är säkrast i den här matchen.')
+    score_request = any(term in normalized for term in
+                        ('slutar', 'slutresultat', 'resultattips', 'resultatet blir', 'tippa', 'prediktion', 'prognos', 'vem vinner', 'tror du vinner', 'vad tror du'))
+    if score_request and not any(term in normalized for term in ('skott', 'kort', 'gula')):
+        first, second = participants[:2]
+        home_games = list(first[2]['history'].get(first[3], []))[-5:]
+        away_games = list(second[2]['history'].get(second[3], []))[-5:]
+        if len(home_games) >= 5 and len(away_games) >= 5:
+            home_rate = (sum(item[1] for item in home_games) / 5 + sum(item[2] for item in away_games) / 5) / 2
+            away_rate = (sum(item[1] for item in away_games) / 5 + sum(item[2] for item in home_games) / 5) / 2
+            grid = GoalModel.matrix(home_rate, away_rate)
+            h, a = max(((h, a) for h in range(8) for a in range(8)), key=lambda score: grid[score])
+            summary = ('En grov resultatuppskattning utifrån lagens fem senaste tidigare inhemska matcher, med mål för och emot. '
+                       'Cupmatcher ingick inte i träningen och uppskattningen är inte validerad för cupspel.')
+            if not fixture.get('utc_date'):
+                summary += ' Jag kan inte bekräfta att mötet är inplanerat.'
+            result = insight('Resultattips · explorativt', summary, competition,
+                             [{'label': 'Resultattips', 'value': f'{first[0]} {h}–{a} {second[0]}',
+                               'detail': 'Målsnitt från ligamatcher · ej validerad cup-prognos'}],
+                             home=fixture['home'], away=fixture['away'],
+                             as_of=max(first[2]['last_match'], second[2]['last_match']))
+            if fixture.get('utc_date'):
+                result['fixture'] = fixture_public(fixture, ROOT)
+            result['source_note'] = 'Grov uppskattning från ligahistorik; ingen tränad cup-modell.'
+            return result
     cards = []
     form_query = any(term in normalized for term in ('form', 'senaste', 'varfor', 'forklara', 'jamfor', 'battre'))
     shots = any(term in normalized for term in ('skott', 'avslut'))
@@ -288,16 +332,19 @@ def ucl_evidence(matches, question):
         for name, code, state, key in participants:
             events = list((state.get('event_history') or {}).get(key, []))
             if shots or broad:
-                recorded = [event['shots'] for event in events if event.get('shots') is not None]
+                recorded = [event['shots'] for event in events if isinstance(event, dict)
+                            and isinstance(event.get('shots'), (int, float))]
                 observations.extend([(f'{name}: minst {minimum} skott på mål', [value >= minimum for value in recorded])
                                      for minimum in (3, 4)])
             if yellows or broad:
-                recorded = [event['cards'] for event in events if event.get('cards') is not None]
+                recorded = [event['cards'] for event in events if isinstance(event, dict)
+                            and isinstance(event.get('cards'), (int, float))]
                 observations.extend([(f'{name}: minst {minimum} gula kort', [value >= minimum for value in recorded])
                                      for minimum in (2, 3)])
         if goals or broad:
             totals = [event['total_goals'] for _, _, state, key in participants
-                      for event in (state.get('event_history') or {}).get(key, [])]
+                      for event in (state.get('event_history') or {}).get(key, [])
+                      if isinstance(event, dict) and isinstance(event.get('total_goals'), (int, float))]
             observations.extend([(f'Minst {minimum} mål i matchen', [value >= minimum for value in totals])
                                  for minimum in (3, 4)])
         for label, values in observations:
@@ -322,12 +369,12 @@ def ucl_evidence(matches, question):
     if not cards:
         if not fixture.get('utc_date'):
             return text_response('Jag saknar verifierat spelschema och tillräckligt många tidigare händelser för de lagen.',
-                                 'UCL', fixture['home'], fixture['away'])
-        return fixture_answer(matches, 'UCL', fixture['home'], fixture['away'],
+                                 competition, fixture['home'], fixture['away'])
+        return fixture_answer(matches, competition, fixture['home'], fixture['away'],
                               title='Historiska händelser saknas', summary='Matchen är publicerad, men det finns för få registrerade händelser för att besvara frågan. Jag kan inte kalla något säkert.')
     missing = [name for name, _, state, key in participants
                if not form_query and len((state.get('event_history') or {}).get(key, [])) < 12]
-    summary = ('Detta är tidigare utfall i lagens respektive ligor, inte sannolikheter för Champions League-matchen. '
+    summary = ('Detta är tidigare utfall i lagens respektive ligor, inte sannolikheter för den här cupmatchen. '
                'Motstånd, skador och startelvor ingår inte. Inget utfall är säkert.')
     if not fixture.get('utc_date'):
         summary = ('Jag har inget verifierat spelschema för just de här lagen: jag kan inte bekräfta att de möts. '
@@ -335,11 +382,11 @@ def ucl_evidence(matches, question):
     if missing:
         summary += ' Tillräcklig händelsestatistik saknas för ' + ', '.join(missing) + '.'
     result = insight(title, summary,
-                     'UCL', cards, home=fixture['home'], away=fixture['away'],
+                     competition, cards, home=fixture['home'], away=fixture['away'],
                      as_of=max(state.get('last_match', '') for _, _, state, _ in participants))
     if fixture.get('utc_date'):
         result['fixture'] = fixture_public(fixture, ROOT)
-    result['source_note'] = 'Historik från respektive inhemsk liga; ingen modell för Champions League har tränats.'
+    result['source_note'] = 'Historik från respektive inhemsk liga; ingen modell för den här cupen har tränats.'
     return result
 
 
@@ -350,7 +397,7 @@ def champions_answer(message, context=None):
     listing = any(term in normalized for term in ('kommande', 'spelschema', 'vilka matcher', 'nasta matcher'))
     if previous and not explicit and not football_followup(message):
         return None
-    result_query = any(term in normalized for term in ('resultat', 'slutade', 'vad blev', 'vem vann', 'hur gick'))
+    result_query = any(term in normalized for term in ('slutade', 'vad blev resultatet', 'vem vann', 'hur gick'))
     if result_query:
         finished = [item for item in read_fixtures(ROOT) if item.get('league') == 'UCL'
                     and item.get('status') == 'FINISHED' and isinstance(item.get('score'), dict)
@@ -401,11 +448,82 @@ def champions_answer(message, context=None):
                           summary='Skriv två lag eller välj en match för att få ett svar på mål, skott, kort, form eller speltid.')
 
 
+def other_cup_answer(message, context=None):
+    """Cupscheman och tydligt osäkra analyser av inhemsk ligahistorik."""
+    normalized = clean_name(message)
+    explicit = [code for code, names in CUP_ALIASES.items() if code != 'UCL'
+                and any(re.search(r'\b' + re.escape(name) + r'\b', normalized) for name in names)]
+    if len(explicit) > 1:
+        return text_response('Vilken cup menar du? Ange en tävling i taget.')
+    previous = context.get('league') if isinstance(context, dict) else None
+    if not explicit and previous not in CUP_NAMES:
+        return None
+    if not explicit and (previous == 'UCL' or not football_followup(message)):
+        return None
+    code = explicit[0] if explicit else previous
+    if code == 'UCL':
+        return None
+    name = CUP_NAMES[code]
+    listing = any(term in normalized for term in ('kommande', 'spelschema', 'vilka matcher', 'nasta matcher'))
+    known = [(league, found) for league in LEAGUES if model_path(league).exists()
+             if (found := find_teams(message, get_state(league)['teams'], league))]
+    if not explicit and any(len(found) == 2 for _, found in known):
+        return None
+    all_fixtures = upcoming_fixtures(ROOT, code)
+    mentioned = ucl_team_matches(message, all_fixtures)
+    if not mentioned and not explicit and isinstance(context, dict):
+        mentioned = {normalize_team(context.get('home') or '', code),
+                     normalize_team(context.get('away') or '', code)} - {''}
+    result_query = any(term in normalized for term in ('hur slutade', 'vad blev resultatet', 'vem vann', 'hur gick det'))
+    if result_query:
+        finished = [item for item in read_fixtures(ROOT) if item.get('league') == code
+                    and item.get('status') == 'FINISHED' and isinstance(item.get('score'), dict)
+                    and isinstance(item['score'].get('home'), int) and isinstance(item['score'].get('away'), int)]
+        past_teams = ucl_team_matches(message, finished)
+        past = [item for item in finished if len(past_teams) == 2 and past_teams ==
+                {normalize_team(item['home'], code), normalize_team(item['away'], code)}]
+        if past:
+            match = max(past, key=lambda item: item.get('utc_date') or '')
+            score = match['score']
+            return fixture_answer([match], code, match['home'], match['away'], title='Färdigspelad cupmatch',
+                                  summary=f'Resultat: {match["home"]} {score["home"]}–{score["away"]} {match["away"]}. Källa: football-data.org.')
+    if len(mentioned) > 1:
+        matches = [item for item in all_fixtures if mentioned ==
+                   {normalize_team(item['home'], code), normalize_team(item['away'], code)}]
+    elif len(mentioned) == 1:
+        matches = [item for item in all_fixtures if next(iter(mentioned)) in
+                   (normalize_team(item['home'], code), normalize_team(item['away'], code))]
+    else:
+        matches = all_fixtures if listing or explicit else []
+    if not matches:
+        pair = unverified_cross_league_pair(message, context)
+        if not pair:
+            same_league = [(league, found) for league, found in known if len(found) == 2]
+            if len(same_league) == 1:
+                league, found = same_league[0]
+                pair = tuple(team_display(key, league) for key in found)
+        if pair and not listing:
+            home, away = pair
+            return ucl_evidence([{'league': code, 'home': home, 'away': away,
+                                  'utc_date': None, 'venue': None}], message, code)
+        return text_response(f'Inget verifierat kommande schema för {name} finns på servern. '
+                             'Cupen kan saknas i datakällans plan; administratören kan uppdatera spelschemat. '
+                             'Jag hittar inte på matcher eller datum.', code)
+    if len(matches) > 1 and len(mentioned) == 1 and not listing:
+        return fixture_answer(matches, code, title='Välj en cupmatch',
+                              summary='Laget har flera kommande matcher. Ange båda lagen för en matchanalys.')
+    if not listing and (len(mentioned) > 1 or len(matches) == 1 and mentioned):
+        return ucl_evidence(matches, message, code)
+    return fixture_answer(matches, code, title=f'Kommande matcher · {name}',
+                          summary='Publicerat spelschema. Skriv båda lagen för analys utifrån lagens ligahistorik.')
+
+
 def safest_history(saved, league, home, away):
     histories = saved.get('event_history') or {}
     if not home or not away or home not in histories or away not in histories:
         return text_response('Jag behöver en ny tränad modell och två lag i samma liga. Kör py train_model.py och skriv till exempel ”Barcelona mot Real Madrid”.', league, home, away)
-    games = {home: list(histories[home]), away: list(histories[away])}
+    games = {home: [item for item in histories[home] if isinstance(item, dict)],
+             away: [item for item in histories[away] if isinstance(item, dict)]}
     if min(map(len, games.values())) < 12:
         return text_response('Det finns för få tidigare matcher för att rangordna återkommande händelser utan att ge falsk precision.', league, home, away)
     candidates = []
@@ -425,15 +543,17 @@ def safest_history(saved, league, home, away):
         if market in forecast['goal_markets']:
             p = forecast['goal_markets'][market]
             candidates.append((p / 100, 'mål', {'label': label, 'value': f'{p:.1f} %',
-                                                'detail': 'Målmodell testad på senare matcher · ingen garanti'}))
+                                                'detail': 'Målmodell testad på senare matcher'}))
     combined = games[home] + games[away]
     if not any(category == 'mål' for _, category, _ in candidates):
-        add('mål', 'Minst 3 mål totalt', [item['total_goals'] >= 3 for item in combined])
+        add('mål', 'Minst 3 mål totalt', [item['total_goals'] >= 3 for item in combined
+                                          if isinstance(item.get('total_goals'), (int, float))])
     for key in (home, away):
         label = team_display(key, league)
         for field, text, category, thresholds in (('cards', 'gula kort', 'kort', (2, 3)),
                                                    ('shots', 'skott på mål', 'skott', (3, 4))):
-            recorded = [item[field] for item in games[key] if item[field] is not None]
+            recorded = [item[field] for item in games[key]
+                        if isinstance(item.get(field), (int, float))]
             for threshold in thresholds:
                 add(category, f'{label}: minst {threshold} {text}',
                     [value >= threshold for value in recorded])
@@ -447,20 +567,12 @@ def safest_history(saved, league, home, away):
     if not selected:
         return text_response('Jag saknar tillräckligt underlag för meningsfulla mål-, kort- och skottförslag för lagen.', league, home, away)
     return insight('Möjliga utfall att jämföra',
-                   'Mål visas som prognos bara när en separat målmodell klarat valideringen. Kort och skott bygger på tidigare ligamatcher, inte en tränad sannolikhetsmodell för just detta möte. Motstånd, skador och startelvor kan ändra utfallet; inget är säkert.',
+                   'Målmodellens siffror är prognoser; skott och kort visar tidigare lagmatcher.',
                    league, [card for _, _, card in selected[:4]], home=home, away=away,
                    as_of=saved['last_match'])
 
 
 def answer_single(message, context=None, history=None):
-    social = friendly_reply(message, history)
-    if social:
-        natural = general_answer(message, {'fotboll': 'Ingen ny match efter ämnesbytet.'}, history)
-        result = text_response(natural or social)
-        result['topic_reset'] = True
-        if natural:
-            result['source'] = 'Språkmodell · samtal'
-        return result
     plain = clean_name(message)
     if (('menade' in plain and 'inte' in plain) or 'istallet for' in plain) and isinstance(context, dict) and context.get('league') in LEAGUES:
         code = context['league']
@@ -475,18 +587,12 @@ def answer_single(message, context=None, history=None):
             pair[pair.index(old[0])] = new[0]
             return answer_single(f'{pair[0]} mot {pair[1]}', None, history)
         return text_response('Vilket av lagen vill du byta ut? Skriv till exempel ”Jag menade Real Madrid, inte Atlético Madrid”.', code, *pair)
-    if plain in ('hej', 'tjena', 'tja', 'halloj'):
-        return text_response('Hej! Fråga om en match, lagens form, mål, skott, gula kort eller när matchen spelas. Jag kan också besvara följdfrågor om matchen vi nyss pratade om.',
-                             context.get('league') if isinstance(context, dict) else None,
-                             context.get('home') if isinstance(context, dict) else None,
-                             context.get('away') if isinstance(context, dict) else None)
-    if plain in ('tack', 'tack sa mycket', 'okej tack'):
-        return text_response('Varsågod! Skriv en följdfråga om matchen när du vill.',
-                             context.get('league') if isinstance(context, dict) else None,
-                             context.get('home') if isinstance(context, dict) else None,
-                             context.get('away') if isinstance(context, dict) else None)
-    if any(term in plain for term in ('vad kan du gora', 'vad kan jag fraga', 'hjalp mig', 'hur fungerar chatten')):
-        return text_response('Du kan fråga om slutresultat i fem ligor, lagens form, tidigare mål, skott och kort samt publicerade matchdatum i Champions League. Jag svarar på följdfrågor om samma match. Frågor om spelares enskilda statistik kräver en särskild spelarfil; inga matchutfall är säkra.',
+    if plain in ('hej', 'tjena', 'tja', 'halloj', 'tack', 'tack sa mycket', 'okej tack'):
+        result = text_response('Fråga om en match eller ett lag.')
+        result['topic_reset'] = True
+        return result
+    if any(term in plain for term in ('vad kan du gora', 'vad kan jag fraga', 'hur fungerar chatten')) or plain == 'hjalp mig':
+        return text_response('Du kan fråga om matchprognoser i fem ligor, lagens form, tidigare mål, skott och kort samt publicerade matchdatum i ligor och cuper när schemat finns. Jag svarar på följdfrågor om samma match. Frågor om spelares enskilda statistik kräver en särskild spelarfil; inga matchutfall är säkra.',
                              context.get('league') if isinstance(context, dict) else None,
                              context.get('home') if isinstance(context, dict) else None,
                              context.get('away') if isinstance(context, dict) else None)
@@ -494,21 +600,20 @@ def answer_single(message, context=None, history=None):
                        for code in LEAGUES if model_path(code).exists()]
     new_domestic_pair = any(len(found) == 2 for found in mentioned_teams)
     explicit_ucl = any(word in plain for word in ('champions league', 'ucl', 'championsligan'))
+    explicit_cup = any(any(re.search(r'\b' + re.escape(name) + r'\b', plain) for name in names)
+                       for names in CUP_ALIASES.values())
     explicit_domestic = any(term in plain for term in ('premier league', 'la liga', 'bundesliga', 'serie a', 'ligue 1'))
     changing_league = explicit_domestic and ('nu' in plain or 'menade' in plain or 'istallet' in plain)
-    if not any(mentioned_teams) and not explicit_ucl and not football_followup(message):
-        natural = general_answer(message, {'fotboll': 'Ingen fotbollsfråga ställdes.'}, history)
-        result = text_response(natural or
-            ('Den allmänna AI-chatten är inte aktiverad på den här sidan ännu. '
-             'Administratören behöver ansluta den.' if PUBLIC_SITE and not os.environ.get('GROQ_API_KEY', '').strip() and not os.environ.get('OPENAI_API_KEY', '').strip()
-             else 'AI-chatten kunde inte svara just nu. Den som driver sidan behöver kontrollera anslutningen i serverloggen.'))
+    if not any(mentioned_teams) and not explicit_cup and not football_followup(message):
+        result = text_response('Jag hjälper till med fotboll. Fråga om en match eller ett lag.')
         result['topic_reset'] = True
-        if natural:
-            result['source'] = 'Språkmodell · samtal'
         return result
     switch_from_ucl = new_domestic_pair and explicit_ucl and any(term in plain for term in
                        ('inte champions', 'inte ucl', 'slapp cl', 'glom psg', 'men nu',
                         'nu galler', 'ar klart', 'nasta fraga', 'varfor blandar du in'))
+    cup = other_cup_answer(message, context)
+    if cup:
+        return cup
     champion = None if (new_domestic_pair and not explicit_ucl) or changing_league or switch_from_ucl else champions_answer(message, context)
     if champion:
         return champion
@@ -536,12 +641,7 @@ def answer_single(message, context=None, history=None):
     if not league:
         if 'vem gor mal' in clean_name(message) or 'vem tror du gor mal' in clean_name(message):
             return text_response('Vilken match menar du? Skriv båda lagen. Jag kan jämföra lagens tidigare mål och säga om en målmodell finns, men saknar data för att peka ut en enskild målskytt.')
-        open_answer = general_answer(message, {'matchdata': 'Ingen specifik match har identifierats.'}, history)
-        if open_answer:
-            result = text_response(open_answer)
-            result['source'] = 'Språkmodell · ingen liveinformation'
-            return result
-        return text_response('Skriv till exempel ”Barcelona mot Real Madrid”, ”Bayern mot Dortmund” eller ”Hur är Arsenals form?”. Jag hittar ligan själv. Fråga sedan ”Varför?” eller ”Hur många gula kort?”.')
+        return text_response('Vilken match eller vilket lag menar du? Skriv till exempel ”Barcelona mot Real Madrid”.')
     saved = get_state(league)
     normalized = clean_name(message)
     teams = saved['teams']
@@ -628,28 +728,42 @@ def answer_single(message, context=None, history=None):
                            home=home, away=away, as_of=observed['last_date'])
         return text_response(f'Jag saknar verifierade spelarmatcher för {player.title()}. Lagens CSV-filer innehåller inte enskilda spelares skott eller kort. En fil med verkliga matcher i data/player_stats.csv gör att jag kan visa historiken, men inte lova vad som händer i nästa match.', league, home, away)
 
-    goal_market = ('both_score' if any(term in normalized for term in ('bada lagen gor mal', 'btts')) else
+    goal_market = ('both_score' if any(term in normalized for term in ('bada lagen gor mal', 'bada lagen gora mal', 'gor bada lagen mal', 'btts')) else
                    'over_2_5' if any(term in normalized for term in ('over 2 5', 'mer an 2 5', 'minst 3 mal', 'tre mal')) else
                    'over_1_5' if any(term in normalized for term in ('over 1 5', 'minst 2 mal')) else None)
-    if goal_market and home and away and saved.get('goal_market_enabled', {}).get(goal_market):
+    if goal_market and home and away:
         forecast = predict_match(home, away, league)
-        probability = forecast['goal_markets'][goal_market]
+        validated = goal_market in forecast['goal_markets']
+        if validated:
+            probability = forecast['goal_markets'][goal_market]
+        else:
+            rates = forecast['scoreline']
+            matrix = GoalModel.matrix(rates['home_expected'], rates['away_expected'])
+            if goal_market == 'both_score':
+                probability = float(matrix[1:, 1:].sum() * 100)
+            else:
+                boundary = 3 if goal_market == 'over_2_5' else 2
+                probability = float(sum(matrix[h, a] for h in range(12) for a in range(12)
+                                        if h + a >= boundary) * 100)
         label = {'both_score': 'Båda lagen gör mål', 'over_2_5': 'Minst 3 mål',
                  'over_1_5': 'Minst 2 mål'}[goal_market]
         odds_match = re.search(r'\bodds\s*(\d+[,.]\d{1,3})\b', message.lower())
         odds_note = ''
-        if odds_match:
+        if odds_match and validated:
             odds = float(odds_match.group(1).replace(',', '.'))
             if 1.01 <= odds <= 100:
                 threshold = 100 / odds
                 odds_note = (f' Du angav odds {odds:.2f}; nollpunkten före insats- och marknadsrisk är {threshold:.1f} %. '
                              f'Modellens uppskattning ligger {probability - threshold:+.1f} procentenheter från den nivån. '
                              'Detta är ingen bekräftad aktuell Unibet-kurs eller garanti för spelvärde.')
-        response = insight(label, 'Uppskattning från en separat målmodell som slog säsongens baslinje på valideringsperioden. Osäkerheten är betydande och detta är ingen garanti.',
+        summary = ('Uppskattning från en separat målmodell som slog baslinjen på valideringsperioden.' if validated else
+                   'Grov Poissonuppskattning utifrån förväntade mål i modellen. Denna målmarknad klarade inte validering mot baslinjen och procentsatsen är inte en testad matchprognos.')
+        response = insight(label, summary,
                            league, [{'label': label, 'value': f'{probability:.1f} %',
-                                     'detail': 'Målmodell · testa mot aktuella odds innan spel'}],
+                                     'detail': 'Validerad målmarknad · ingen garanti' if validated else 'Explorativ uppskattning · använd inte som säkert spel'}],
                            home=home, away=away, as_of=saved['last_match'])
         response['summary'] += odds_note
+        response['source_note'] = 'Målmodellens uppskattning · inte xG från matchhändelser.'
         response['fixture'] = forecast.get('fixture')
         return response
 
@@ -658,6 +772,28 @@ def answer_single(message, context=None, history=None):
         label = 'Skott på mål' if shot_query else 'Gula kort'
         if not snapshots:
             return text_response(f'Vilket lag menar du? Skriv till exempel ”Hur många {label.lower()} har Bayern haft?”.', league, home, away)
+        asks_future = bool(re.search(r'\b(?:far|kommer|tror|blir det|nasta match|over|minst)\b', normalized))
+        boundary = re.search(r'\b(over|mer an|minst)\s+(\d{1,2})\b', normalized)
+        if asks_future:
+            threshold = int(boundary.group(2)) + (boundary.group(1) != 'minst') if boundary else (4 if shot_query else 2)
+            event_key = 'shots' if shot_query else 'cards'
+            cards = []
+            for key in targets:
+                events = (saved.get('event_history') or {}).get(key, [])
+                observed = [item[event_key] for item in events if isinstance(item, dict)
+                            and isinstance(item.get(event_key), (int, float))]
+                if len(observed) >= 12:
+                    count = sum(value >= threshold for value in observed)
+                    cards.append({'label': f'{team_display(key, league)}: minst {threshold} {label.lower()}',
+                                  'value': f'{count} av {len(observed)}',
+                                  'detail': f'{count / len(observed):.0%} i tidigare ligamatcher; ingen testad matchprognos'})
+            if cards:
+                response = insight(f'{label} · möjlig matchbild',
+                                   f'Jag skulle jämföra gränsen minst {threshold} {label.lower()} med lagens tidigare utfall nedan. Motstånd, startelva och matchtempo kan ändra det; siffrorna är historik och kan inte användas som säker sannolikhet för nästa match.',
+                                   league, cards, home=home, away=away, as_of=saved['last_match'])
+                response['source_note'] = 'Tidigare lagmatcher med registrerade händelser; ingen tränad modell för nästa matchs skott eller kort.'
+                return response
+            return text_response(f'Jag kan inte ge en underbyggd prognos för {label.lower()}: färre än 12 tidigare matcher med den statistiken finns för lagen. Lagmodellen för slutresultat uppskattar inte enskilda skott eller kort.', league, home, away)
         cards = []
         for team in snapshots:
             observation = team[metric]
@@ -700,8 +836,11 @@ def answer_single(message, context=None, history=None):
     clean_sheet = 'nollan' in normalized or 'clean sheet' in normalized
     both_score = 'bada lagen gor mal' in normalized or 'btts' in normalized
     form_query = any(term in normalized for term in ('form', 'senaste', 'mal', 'poang', 'vinster', 'jamfor', 'battre', 'forluster'))
-    predict_query = any(term in normalized for term in ('vem vinner', 'prognos', 'sannolikhet', 'vinstchans', 'hur gar matchen'))
-    defense_query = 'forsvar' in normalized or 'inslappta' in normalized
+    predict_query = any(term in normalized for term in
+                        ('vem vinner', 'prognos', 'sannolikhet', 'vinstchans', 'hur gar matchen',
+                         'tror du', 'tippar du', 'tippa', 'prediktion', 'slutar', 'slutresultat', 'resultattips'))
+    defense_query = (any(term in normalized for term in ('forsvar', 'inslappta', 'slapper in', 'slappte in', 'baklangesmal', 'defensiv'))
+                     or bool(re.search(r'\bslapp(?:er|te)\b(?:\s+\w+){0,4}\s+in\b', normalized)))
     attack_query = 'anfall' in normalized or 'gjorda mal' in normalized
     if snapshots and (high_goals or clean_sheet or both_score or defense_query or attack_query):
         key = ('high_goal_games' if high_goals else 'clean_sheets' if clean_sheet else
@@ -725,21 +864,54 @@ def answer_single(message, context=None, history=None):
                           else 'Lagen tog lika många poäng i de fem senaste matcherna. ')
         return insight('Form senaste fem matcher', comparison + 'Poäng, mål och resultat i respektive liga.',
                        league, cards, teams=snapshots, home=home, away=away, as_of=saved['last_match'])
+    if 'xg' in normalized and snapshots:
+        return insight('Målutsikter utan xG-data',
+                       'Jag saknar uppmätt expected goals (xG) och chansdata. Tabellen visar mål som faktiskt gjorts och släppts in i tidigare ligamatcher, inte xG.',
+                       league, [{'label': team['name'], 'value': f'{team["scored"]}–{team["conceded"]}',
+                                 'detail': f'Gjorda–insläppta mål senaste {team["count"]} matcherna'} for team in snapshots],
+                       home=home, away=away, as_of=saved['last_match'])
     if home and away and (len(found) == 2 or predict_query):
         prediction = predict_match(home, away, league)
         prediction['kind'] = 'prediction'
         prediction['context'] = context_for(league, home, away)
         return prediction
+    team_overview = any(term in normalized for term in
+                        ('tycker', 'hur spelar', 'hur bra spelar', 'hur ser', 'styrkor', 'svagheter', 'laget just nu', 'lagets lage'))
+    if snapshots and team_overview:
+        return insight('Lagets aktuella ligahistorik',
+                       'Utifrån senaste registrerade matcher: poäng och mål ger en bild av form och defensiv. Detta är historik; motstånd och laguppställning för nästa match kan ändra bilden.',
+                       league, [{'label': team['name'], 'value': f'{team["points"]} / {3 * team["count"]}',
+                                 'detail': f'{team["scored"]} gjorda och {team["conceded"]} insläppta mål i {team["count"]} matcher'}
+                                for team in snapshots],
+                       teams=snapshots, home=home, away=away, as_of=saved['last_match'])
     matches = upcoming_fixtures(ROOT, league, home, away) if home and away else []
-    open_answer = general_answer(message, {
+    verified = {
         'liga': LEAGUES[league]['name'], 'senaste_resultat_i_modellen': saved['last_match'],
-        'lagens_senaste_fem': snapshots,
         'bekraftad_kommande_match': fixture_public(matches[0], ROOT) if matches else None,
-        'spelarstatistik': 'Inte tillgänglig utan verifierad spelarfil.'}, history)
+        'laghistorik': [{key: row[key] for key in ('name', 'count', 'points', 'scored', 'conceded')}
+                        for row in snapshots],
+        'spelarstatistik': 'Inte tillgänglig utan verifierad spelarfil.',
+        'xg_skador_startelvor': 'Saknas i underlaget.'}
+    if home and away:
+        try:
+            forecast = predict_match(home, away, league)
+            verified['modellprognos'] = {'scoreline': forecast['scoreline'],
+                                        'sannolikheter': forecast['probabilities'],
+                                        'malmarknader': forecast['goal_markets']}
+        except ValueError:
+            verified['modellprognos'] = None
+    open_answer = general_answer(message, verified, history)
     if open_answer:
         result = text_response(open_answer, league, home, away)
         result['source'] = 'Språkmodell · använder bara tillgängligt underlag'
         return result
+    if snapshots:
+        return insight('Detta kan jag se om laget',
+                       'Jag kan inte verifiera den särskilda uppgiften i frågan. Här finns i stället lagets senaste registrerade ligamatcher.',
+                       league, [{'label': team['name'], 'value': f'{team["points"]} / {3 * team["count"]}',
+                                 'detail': f'Poäng · {team["scored"]} gjorda och {team["conceded"]} insläppta mål'}
+                                for team in snapshots],
+                       teams=snapshots, home=home, away=away, as_of=saved['last_match'])
     return text_response('Jag kan visa matchprognoser, lagform, mål, hållna nollor, lagens skott och kort, samt modellens testresultat. Skriv ett lag eller två lag i någon av de fem ligorna. För individuella spelare krävs en separat verifierad spelarfil.', league, home, away)
 
 
@@ -752,7 +924,7 @@ def answer_question(message, context=None, history=None):
     # Om lagnamnen står i sista delfrågan gäller de hela den aktuella frågan.
     identified = [(code, found) for code in LEAGUES if model_path(code).exists()
                   if len(found := find_teams(message, get_state(code)['teams'], code)) == 2]
-    if len(identified) == 1 and not any(word in clean_name(message) for word in ('champions league', 'ucl')):
+    if len(identified) == 1 and not any(name in clean_name(message) for names in CUP_ALIASES.values() for name in names):
         code, (home, away) = identified[0]
         active = context_for(code, home, away)
     for part in pieces:
@@ -771,13 +943,47 @@ def index():
     return render_template('index.html')
 
 
+@app.get('/health')
+def health():
+    return jsonify(status='ok', ai_health=connection_health(),
+                   ai_error_code=connection_error_code(),
+                   leagues_ready=sum(model_path(code).exists() for code in LEAGUES))
+
+
+@app.errorhandler(404)
+def not_found(_error):
+    if request.path.startswith('/api/') or request.path == '/chat':
+        return jsonify(error='Adressen finns inte.'), 404
+    return render_template('404.html'), 404
+
+
+@app.errorhandler(413)
+def too_large(_error):
+    return jsonify(error='Frågan är för stor. Skriv högst 500 tecken.'), 413
+
+
 @app.get('/evaluation')
 def evaluation():
     reports = []
     for code in LEAGUES:
         path = ROOT / 'artifacts' / f'evaluation_{code}.json'
         if path.exists():
-            reports.append(json.loads(path.read_text(encoding='utf-8')))
+            try:
+                report = json.loads(path.read_text(encoding='utf-8'))
+                valid_periods = (isinstance(report, dict) and isinstance(report.get('periods'), dict) and
+                                 all(isinstance(report['periods'].get(period), dict) and
+                                     all(key in report['periods'][period] for key in ('first', 'last', 'matches'))
+                                     for period in ('train', 'validation', 'test')))
+                valid_metrics = (isinstance(report, dict) and isinstance(report.get('test'), dict) and
+                                 all(isinstance(metric, dict) and all(key in metric for key in
+                                     ('accuracy', 'log_loss', 'brier')) for metric in report['test'].values()))
+                if valid_periods and valid_metrics and all(key in report for key in
+                    ('league', 'source_matches', 'selected_model')):
+                    if not isinstance(report.get('odds_benchmark'), dict):
+                        report['odds_benchmark'] = None
+                    reports.append(report)
+            except (OSError, ValueError, UnicodeError):
+                app.logger.warning('Utvärderingsfilen för %s kunde inte läsas.', code)
     return render_template('evaluation.html', reports=reports)
 
 
@@ -789,18 +995,19 @@ def leagues():
 
 @app.get('/api/chat/status')
 def chat_status():
-    return jsonify(language_model=language_status(), public=PUBLIC_SITE)
+    return jsonify(language_model=language_status(), ai_health=connection_health(),
+                   ai_error_code=connection_error_code(), public=PUBLIC_SITE)
 
 
 @app.get('/api/fixtures')
 def fixture_list():
     code = request.args.get('league', '')
-    if code and code not in (*LEAGUES, 'UCL'):
+    if code and code not in (*LEAGUES, *CUP_NAMES):
         return jsonify(error='Okänd tävling.'), 400
     result = []
-    for league in ([code] if code else [*LEAGUES, 'UCL']):
+    for league in ([code] if code else [*LEAGUES, *CUP_NAMES]):
         result.extend(fixture_public(item, ROOT) for item in upcoming_fixtures(ROOT, league))
-    return jsonify(sorted(result, key=lambda item: item['utc_date'])[:80])
+    return jsonify(sorted(result, key=lambda item: item['utc_date'])[:500])
 
 
 @app.get('/api/data/status')
@@ -853,6 +1060,8 @@ def start_update():
     if origin and origin != request.host_url.rstrip('/'):
         return jsonify(error='Förfrågan måste komma från den här lokala sidan.'), 403
     body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify(error='Välj en giltig uppdatering.'), 400
     kind = body.get('kind')
     if kind not in ('fixtures', 'results'):
         return jsonify(error='Välj spelschema eller resultat.'), 400
@@ -927,10 +1136,14 @@ def chat():
         return jsonify(error='Skriv en fråga på högst 500 tecken.'), 400
     if PUBLIC_SITE and not allow_public_chat(request.remote_addr or 'unknown'):
         return jsonify(error='Chatten har nått sin tillfälliga gräns. Prova igen senare.'), 429
-    context = body.get('context')
-    history = body.get('history')
-    if not isinstance(history, list):
-        history = []
+    raw_context = body.get('context')
+    context = ({field: raw_context[field] for field in ('league', 'home', 'away')
+                if isinstance(raw_context.get(field), str) and len(raw_context[field]) <= 100}
+               if isinstance(raw_context, dict) else None)
+    raw_history = body.get('history')
+    history = [{field: item[field][:400] for field in ('question', 'answer')
+                if isinstance(item.get(field), str)}
+               for item in raw_history[-20:] if isinstance(item, dict)] if isinstance(raw_history, list) else []
     try:
         answer = answer_question(message, context, history[-20:])
         answer['suggestions'] = suggestions(answer, history[-20:], message)

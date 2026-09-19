@@ -68,7 +68,8 @@ def football_followup(message):
     """Behåll matchkontext bara för en uttrycklig fotbollsfråga."""
     phrase = clean_name(message)
     if phrase in ('varfor', 'varfor ser det ut sa', 'vem vinner', 'nar spelar de', 'nar spelas den',
-                  'vilken arena', 'vad ar sakrast', 'hur gar matchen', 'kort', 'mal', 'skott', 'form'):
+                  'vilken arena', 'vad ar sakrast', 'hur gar matchen', 'vad tror du matchen slutar',
+                  'hur slutar matchen', 'vad tror du', 'vad tippar du', 'kort', 'mal', 'skott', 'form'):
         return True
     return any(token in phrase for token in (
         'match', 'fotboll', 'champions', 'ucl', 'skott pa mal', 'gula kort',
@@ -76,7 +77,8 @@ def football_followup(message):
         'resultat', 'vinner', 'arena', 'spelschema', 'speltid', 'vinstchans',
         'odds', 'speltips', 'lapp', 'betting', 'sakrast att handa', 'lagens form', 'vem tror du vinner',
         'bada lagen gor mal', 'over 2', 'hur manga mal',
-        'vem gor mal', 'vem tror du gor mal', 'vilken spelare gor mal', 'malskytt'))
+        'vem gor mal', 'vem tror du gor mal', 'vilken spelare gor mal', 'malskytt',
+        'slutar', 'slutresultat', 'prediktion', 'tippa'))
 
 
 def parts_of_question(message):
@@ -106,11 +108,12 @@ def intent(message):
         return 'schedule'
     if any(token in phrase for token in ('varfor', 'forklara', 'hur kommer det sig')):
         return 'why'
-    if any(token in phrase for token in ('over 2 5', 'minst 3 mal', '3 mal', 'mal totalt')):
+    if any(token in phrase for token in ('over 2 5', 'minst 3 mal', '3 mal', 'mal totalt',
+                                         'bada lagen gor mal', 'btts', 'gor bada lagen mal')):
         return 'goals'
     if any(token in phrase for token in ('sakrast', 'vanligast', 'mest troligt', 'lapp', 'speltips')):
         return 'ticket'
-    if any(token in phrase for token in ('vem vinner', 'vinstchans', 'prognos', 'vem tror du')):
+    if any(token in phrase for token in ('vem vinner', 'vinstchans', 'prognos', 'vem tror du', 'slutar', 'tippa', 'prediktion')):
         return 'prediction'
     return phrase[:80]
 
@@ -134,8 +137,6 @@ def suggestions(answer, history=None, question=''):
             ('why', 'Varför ser analysen ut så?'),
             ('schedule', 'När och var spelas matchen?'),
         ]
-        if league == 'UCL':
-            candidates = [item for item in candidates if item[0] != 'prediction']
     elif league:
         candidates = [('form', 'Hur är lagets form?'), ('schedule', 'När spelar laget nästa match?'),
                       ('shots', 'Hur många skott på mål har laget haft?')]

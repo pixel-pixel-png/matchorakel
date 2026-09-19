@@ -6,7 +6,18 @@ from pathlib import Path
 from football import LEAGUES, ALIASES, clean_name, team_key
 
 PROVIDER = 'football-data.org'
-COMPETITIONS = {'PL': 'PL', 'LL': 'PD', 'BL': 'BL1', 'SA': 'SA', 'L1': 'FL1', 'UCL': 'CL'}
+CUP_NAMES = {'UCL': 'Champions League', 'FAC': 'FA Cup', 'CDR': 'Copa del Rey',
+             'EL': 'Europa League', 'UECL': 'Conference League',
+             'DFB': 'DFB-Pokal', 'CIT': 'Coppa Italia'}
+CUP_ALIASES = {'UCL': ('champions league', 'championsligan', 'ucl'),
+               'FAC': ('fa cup', 'facup'), 'CDR': ('copa del rey', 'copa espana', 'spanska cupen'),
+               'EL': ('europa league', 'europaleague', 'europaligan'),
+               'UECL': ('conference league', 'europa conference league', 'conference ligan'),
+               'DFB': ('dfb pokal', 'tyska cupen'),
+               'CIT': ('coppa italia', 'italienska cupen')}
+COMPETITIONS = {'PL': 'PL', 'LL': 'PD', 'BL': 'BL1', 'SA': 'SA', 'L1': 'FL1',
+                'UCL': 'CL', 'FAC': 'FAC', 'CDR': 'CDR', 'EL': 'EL',
+                'UECL': 'UCL', 'DFB': 'DFB', 'CIT': 'CIT'}
 KNOWN_HOME_VENUES = {
     ('LL', 'sevilla'): {'venue': 'Estadio Ramón Sánchez-Pizjuán',
                         'source': 'Sevilla FC · https://entradas.sevillafc.es/'},
@@ -17,8 +28,18 @@ def read_fixtures(root: Path):
     path = root / 'data' / 'fixtures.json'
     if not path.exists():
         return []
-    payload = json.loads(path.read_text(encoding='utf-8'))
-    return payload.get('fixtures', []) if isinstance(payload, dict) else []
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except (ValueError, OSError, UnicodeError):
+        return []
+    fixtures = payload.get('fixtures', []) if isinstance(payload, dict) else []
+    if not isinstance(fixtures, list):
+        return []
+    return [item for item in fixtures if isinstance(item, dict) and
+            item.get('league') in (*LEAGUES, *CUP_NAMES) and
+            isinstance(item.get('home'), str) and item['home'].strip() and
+            isinstance(item.get('away'), str) and item['away'].strip() and
+            isinstance(item.get('utc_date'), str)]
 
 
 def read_venues(root: Path):
@@ -27,13 +48,13 @@ def read_venues(root: Path):
         return {}
     try:
         data = json.loads(path.read_text(encoding='utf-8'))
-        return data.get('team_venues', {}) if isinstance(data.get('team_venues'), dict) else {}
+        return data.get('team_venues', {}) if isinstance(data, dict) and isinstance(data.get('team_venues'), dict) else {}
     except (ValueError, OSError, AttributeError):
         return {}
 
 
 def normalize_team(name, league):
-    if league == 'UCL':
+    if league in CUP_NAMES:
         raw = clean_name(name)
         for code in LEAGUES:
             if raw in ALIASES[code]:
@@ -46,7 +67,7 @@ def fixture_time(fixture):
     try:
         parsed = datetime.fromisoformat(fixture['utc_date'].replace('Z', '+00:00'))
         return parsed if parsed.tzinfo else None
-    except (ValueError, KeyError, AttributeError):
+    except (ValueError, KeyError, AttributeError, TypeError):
         return None
 
 
@@ -73,13 +94,14 @@ def upcoming_fixtures(root, league, home=None, away=None, team=None):
 def home_venue(root, league, home):
     key = normalize_team(home, league)
     venues = read_venues(root)
-    estimated = venues.get(league, {}).get(key, {})
-    if not estimated and league == 'UCL':
-        estimated = next((venues.get(code, {}).get(key) for code in LEAGUES
-                          if venues.get(code, {}).get(key)), {})
+    league_venues = venues.get(league)
+    estimated = league_venues.get(key, {}) if isinstance(league_venues, dict) else {}
+    if not estimated and league in CUP_NAMES:
+        estimated = next((items[key] for code in LEAGUES
+                          if isinstance((items := venues.get(code)), dict) and items.get(key)), {})
     if not estimated:
         estimated = KNOWN_HOME_VENUES.get((league, key), {})
-    if not estimated and league == 'UCL':
+    if not estimated and league in CUP_NAMES:
         estimated = next((KNOWN_HOME_VENUES.get((code, key)) for code in LEAGUES
                           if KNOWN_HOME_VENUES.get((code, key))), {})
     return estimated if isinstance(estimated, dict) else {}

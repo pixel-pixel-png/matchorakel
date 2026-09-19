@@ -8,14 +8,43 @@ from urllib.request import Request, urlopen
 
 
 INSTRUCTIONS = (
-    'Du är Matchorakel och samtalar naturligt på svenska om fotboll och andra ämnen. '
-    'Följ samtalet och svara på just den senaste frågan, utan att byta tillbaka till fotboll '
-    'om personen byter ämne. Ställ gärna en relevant följdfråga i vanligt samtal. '
-    'För specifika matcher, arenor, skador, spelarstatistik och sannolikheter får du bara '
-    'använda verifierade fakta i underlaget. Hitta inte på aktuella resultat, scheman '
-    'eller odds. Var tydlig när aktuella fakta saknas.'
+    'Du är Matchorakel, en kortfattad fotbollsanalytiker. Svara på svenska och börja direkt med svaret. '
+    'Enkel fråga: 1–2 meningar. Resultattips: skriv först "Prediction: Lag A 2–1 Lag B" med siffror '
+    'från tillhandahållen modell, sedan 1X2 om den finns och högst fyra korta meningar om de '
+    'viktigaste verifierade faktorerna. Skilj observationer från sannolikheter och möjliga utfall. '
+    'Följ senaste relevanta matchkontext; besvara bara den nya frågan. Använd enbart uppgifterna '
+    'i faktafältet för statistik, resultat, datum, skador och spelare. Saknas en uppgift, säg det kort '
+    'och analysera det som faktiskt finns. Hitta inte på siffror, press, skador eller spelschema. '
+    'Skriv vanlig löptext utan hälsningsfras, rubriker, markdown, avslutning eller rutinmässig varning.'
 )
 logger = logging.getLogger(__name__)
+groq_health = 'unverified'
+groq_last_error_code = None
+other_health = 'unverified'
+
+
+def clean_ai_answer(value):
+    """Ta bort kända standardfraser, men behåll fakta och användarens efterfrågade innehåll."""
+    if not isinstance(value, str):
+        return None
+    answer = value.strip()
+    answer = re.sub(r'^(?:bra fråga[!.]?|självklart[!.]?|här är (?:min |en )?analys(?: av matchen)?[.:]?|absolut[!.]?)\s*',
+                    '', answer, flags=re.IGNORECASE)
+    answer = re.sub(r'\s*(?:hoppas det hjälper[!.]?|säg till om du vill veta mer[!.]?|kom ihåg att fotboll är oförutsägbart[!.]?)\s*$',
+                    '', answer, flags=re.IGNORECASE)
+    answer = re.sub(r'\*\*(.*?)\*\*', r'\1', answer)
+    answer = re.sub(r'(?m)^#{1,4}\s+', '', answer)
+    return answer.strip() or None
+
+
+def connection_health():
+    if os.environ.get('GROQ_API_KEY', '').strip():
+        return groq_health
+    return 'unconfigured' if not os.environ.get('OPENAI_API_KEY', '').strip() and not ollama_model() else other_health
+
+
+def connection_error_code():
+    return groq_last_error_code if groq_health == 'failed' and os.environ.get('GROQ_API_KEY', '').strip() else None
 
 
 def ollama_model():
@@ -23,7 +52,8 @@ def ollama_model():
     try:
         with urlopen('http://127.0.0.1:11434/api/tags', timeout=0.35) as response:
             data = json.load(response)
-        models = [item.get('name') for item in data.get('models', []) if isinstance(item, dict)]
+        rows = data.get('models', []) if isinstance(data, dict) else []
+        models = [item.get('name') for item in rows if isinstance(item, dict)] if isinstance(rows, list) else []
         selected = os.environ.get('MATCHORAKEL_OLLAMA_MODEL', '').strip()
         if selected in models:
             return selected
@@ -41,6 +71,7 @@ def language_status():
 
 
 def general_answer(question, facts, history=None):
+    global groq_health, groq_last_error_code, other_health
     groq_key = os.environ.get('GROQ_API_KEY', '').strip()
     key = os.environ.get('OPENAI_API_KEY', '').strip()
     recent = []
@@ -53,8 +84,12 @@ def general_answer(question, facts, history=None):
             if user and assistant:
                 messages.extend([{'role': 'user', 'content': user}, {'role': 'assistant', 'content': assistant}])
         messages.append({'role': 'user', 'content': question})
-        payload = {'model': os.environ.get('MATCHORAKEL_GROQ_MODEL', 'openai/gpt-oss-20b'),
-                   'messages': messages, 'max_completion_tokens': 500}
+        selected_model = os.environ.get('MATCHORAKEL_GROQ_MODEL', 'openai/gpt-oss-20b').strip()
+        payload = {'model': selected_model,
+                   'messages': messages, 'max_completion_tokens': 768, 'temperature': 0.5}
+        # GPT-OSS använder egna resonemangstoken; en alltför liten gräns kan ge tomt användarsvar.
+        if selected_model.startswith('openai/gpt-oss-'):
+            payload.update(reasoning_format='hidden', reasoning_effort='low')
         request = Request('https://api.groq.com/openai/v1/chat/completions',
                           data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
                           headers={'Authorization': 'Bearer ' + groq_key,
@@ -62,11 +97,18 @@ def general_answer(question, facts, history=None):
         try:
             with urlopen(request, timeout=30) as response:
                 result = json.load(response)
-            content = (result.get('choices') or [{}])[0].get('message', {}).get('content', '')
+            choices = result.get('choices') if isinstance(result, dict) else None
+            choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+            message = choice.get('message')
+            content = message.get('content') if isinstance(message, dict) else None
             if not isinstance(content, str) or not content.strip():
                 logger.warning('Groq gav ett tomt svar. Kontrollera modellens inställningar och kvoter.')
+                groq_health = 'failed'
+                groq_last_error_code = None
                 return None
-            return content.strip()
+            groq_health = 'ok'
+            groq_last_error_code = None
+            return clean_ai_answer(content)
         except HTTPError as error:
             # Endast maskinläsbara felkoder: logga aldrig svaret, frågan eller nyckeln.
             details = {}
@@ -77,12 +119,17 @@ def general_answer(question, facts, history=None):
             if not isinstance(details, dict):
                 details = {}
             safe = lambda item: re.sub(r'[^a-zA-Z0-9_.-]', '', str(item or ''))[:80]
-            logger.warning('Groq svarade med HTTP %s; felkod=%s; typ=%s.',
+            content_type = safe(error.headers.get('Content-Type', 'saknas'))
+            logger.warning('Groq svarade med HTTP %s; felkod=%s; typ=%s; svarstyp=%s.',
                            error.code, safe(details.get('code')) or 'saknas',
-                           safe(details.get('type')) or 'saknas')
+                           safe(details.get('type')) or 'saknas', content_type)
+            groq_health = 'failed'
+            groq_last_error_code = error.code
             return None
         except (URLError, TimeoutError, ValueError, OSError, AttributeError, IndexError) as error:
             logger.warning('Groq-anrop misslyckades: %s.', type(error).__name__)
+            groq_health = 'failed'
+            groq_last_error_code = None
             return None
     if not key:
         model = ollama_model()
@@ -93,20 +140,25 @@ def general_answer(question, facts, history=None):
             if user and assistant:
                 messages.extend([{'role': 'user', 'content': user}, {'role': 'assistant', 'content': assistant}])
         messages.append({'role': 'user', 'content': question})
-        payload = {'model': model, 'messages': messages, 'stream': False}
+        payload = {'model': model, 'messages': messages, 'stream': False,
+                   'options': {'temperature': 0.25, 'num_predict': 280}}
         request = Request('http://127.0.0.1:11434/api/chat',
                           data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
                           headers={'Content-Type': 'application/json'}, method='POST')
         try:
             with urlopen(request, timeout=90) as response:
                 result = json.load(response)
-            return (result.get('message') or {}).get('content', '').strip() or None
+            message = result.get('message') if isinstance(result, dict) else None
+            content = message.get('content') if isinstance(message, dict) else None
+            other_health = 'ok' if isinstance(content, str) and content.strip() else 'failed'
+            return clean_ai_answer(content) if other_health == 'ok' else None
         except (HTTPError, URLError, TimeoutError, ValueError, OSError):
+            other_health = 'failed'
             return None
     payload = {
         'model': os.environ.get('MATCHORAKEL_LANGUAGE_MODEL', 'gpt-5-mini'),
         'store': False,
-        'max_output_tokens': 550,
+        'max_output_tokens': 400,
         'instructions': (
             INSTRUCTIONS
         ),
@@ -121,8 +173,13 @@ def general_answer(question, facts, history=None):
         with urlopen(request, timeout=20) as response:
             data = json.load(response)
     except (HTTPError, URLError, TimeoutError, ValueError):
+        other_health = 'failed'
         return None
-    parts = [block.get('text', '') for item in data.get('output', [])
-             if item.get('type') == 'message' for block in item.get('content', [])
-             if block.get('type') == 'output_text']
-    return '\n'.join(parts).strip() or None
+    output = data.get('output', []) if isinstance(data, dict) else []
+    parts = [block.get('text', '') for item in output if isinstance(item, dict)
+             and item.get('type') == 'message' and isinstance(item.get('content'), list)
+             for block in item['content'] if isinstance(block, dict)
+             and block.get('type') == 'output_text' and isinstance(block.get('text'), str)] if isinstance(output, list) else []
+    result = '\n'.join(parts).strip()
+    other_health = 'ok' if result else 'failed'
+    return clean_ai_answer(result)

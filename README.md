@@ -1,10 +1,12 @@
 # Matchorakel – fotboll och samtal i samma chatt
 
-En webbchatt som visar **uppskattade** sannolikheter för hemmavinst, oavgjort och bortavinst. Premier League, La Liga, Bundesliga, Serie A och Ligue 1 har egna matchfiler, modeller och testresultat. Du behöver inte välja liga: skriv lagnamnen och fortsätt med följdfrågor i samma chatt. Sidan kan visa form, mål, lagens skott på mål eller gula kort, hållna nollor och tidigare målrika matcher när uppgifterna finns. Du kan också prata om andra ämnen i **samma chatt** när servern har en ansluten språkmodell. Chattar sparas lokalt i webbläsaren och kan raderas i sidomenyn.
+En webbchatt som visar **uppskattade** sannolikheter för hemmavinst, oavgjort och bortavinst. Premier League, La Liga, Bundesliga, Serie A och Ligue 1 har egna matchfiler, modeller och testresultat. Du behöver inte välja liga: skriv lagnamnen och fortsätt med följdfrågor i samma chatt. Sidan kan visa form, mål, lagens skott på mål eller gula kort, hållna nollor och tidigare målrika matcher när uppgifterna finns. Frågor utanför fotboll får ett kort hänvisande svar. Chattar sparas lokalt i webbläsaren och kan raderas i sidomenyn.
 
 För en publicerad sajt kan du använda en egen `GROQ_API_KEY` på Groqs gratisnivå. Servern skickar bara aktuell fråga, kort samtalshistorik och relevant underlag till språkmodellen; nyckeln skickas inte till webbläsaren. Lokalt kan du även ansluta [Ollama](https://docs.ollama.com/windows) eller använda `OPENAI_API_KEY` (som kan kosta pengar). Football-data.org-nyckeln används bara för spelscheman. Inget språkmodellssvar garanterar korrekta aktuella fakta; matchdata hämtas separat.
 
-Version 10 har ett gemensamt chattfält och tar bort valet ”Fri chatt”. Den känner igen ”bra tack”, ”Atlético” och målskyttsfrågor i en pågående matchkonversation. Frågan ”vad är vanligast?” visar mer meningsfulla målgränser och en testad målmodell när den finns; skott och kort märks som tidigare observationer. Två klubbar från olika ligor kan jämföras som möjlig Champions League-fråga utan att ett möte, datum eller någon arena hittas på. På en publicerad server visas ett tydligt fel om AI-nyckeln saknas och ett ofarligt HTTP-felnummer loggas om AI-tjänsten inte svarar. Vid publicering kan besökare inte starta omträning eller skriva in din datanyckel. Sevilla FC:s ordinarie arena kan visas som **trolig** hemmaarena om matchkällan inte anger spelplatsen.
+Version 11 behåller en gemensam chatt. Den visar konkreta men osäkra resultattips för ligamatcher och analyserar även FA Cup, Copa del Rey ("Copa España"), Europa League, Conference League, DFB-Pokal och Coppa Italia i samma chatt. Resultattips för cuper är grova uppskattningar från ligahistorik, inte validerade cupmodeller. Enskilda slutresultat har inte separat validerats; procentsatserna för 1X2 kommer från den tränade ligamodellen. Cuper visas i matchpanelen endast när datakällan lämnat matcherna. [Kontrollera football-data.orgs täckning för din plan](https://www.football-data.org/pricing): gratisnyckeln behöver inte ge tillgång till alla cuper. Gränssnittet visar också när AI-anslutningen misslyckas; tillgänglig matchfakta fortsätter att fungera.
+
+Version 12 har mörkt och avskalat gränssnitt, kortare fotbollssvar och en tydlig resultatrad före statistik. Den hänvisar frågor utanför fotboll till matchanalys. Version 12 förtydligar också svar på enskilda lag och frågor om insläppta mål och xG. Målfrågor får en markerad grov uppskattning när just den målmarknaden inte klarade valideringen. Framtidsfrågor om skott och gula kort visar tidigare utfall med tillräckligt underlag, tydligt skilt från en tränad matchprognos. Felaktig samtalskontext, trasig historik, ofullständiga spelscheman och saknade statistikfält hanteras utan att låsa chatten. AI-status visar den faktiska HTTP-koden efter ett fel; ett lagrat API-värde betyder inte att anslutningen har testats.
 
 ## Publicera gratis så andra kan chatta
 
@@ -15,8 +17,8 @@ Den här utgåvan kan publiceras med [Render Free Web Service](https://render.co
 1. Öppna [GitHub](https://github.com/new), skapa ett nytt publikt repository, exempelvis `matchorakel`, och välj **Create repository**. Skapa ingen README automatiskt.
 2. På den tomma repositorysidan välj **uploading an existing file**. Öppna din uppdaterade `matchorakel`-mapp i Utforskaren, markera filerna och mapparna **inne i den** och dra dem till GitHubs uppladdningsyta. **Lägg inte upp `.env`, dina CSV-filer, `artifacts` eller `data/fixtures.json`; kontrollera listan innan du trycker Commit changes.** På repositoryts första sida ska `app.py` och `render.yaml` ligga på samma nivå. Om GitHubs webbuppladdning inte klarar hela mappstrukturen, använd GitHub Desktop för att publicera mappen.
 3. Gå till [Render Dashboard](https://dashboard.render.com/), välj **New → Blueprint**, koppla ditt nya GitHub-repository och välj filen `render.yaml`. Render ska visa `plan: free`. Skriv in din Groq-nyckel i hemligheten `GROQ_API_KEY` när Render ber om den och starta publiceringen. Om du använder Web Service i stället för Blueprint: välj Python och Free, **Build Command** `pip install -r requirements.txt && python deploy_build.py`, **Start Command** `gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 2 --timeout 90 public_start:app` och skapa miljövariablerna `PYTHON_VERSION=3.13.4`, `MATCHORAKEL_PUBLIC=1` och `GROQ_API_KEY`.
-4. Vänta tills byggloggen visar att alla fem ligamodeller tränats och sidan blir **Live**. Öppna Render-länken som slutar på `.onrender.com`. Fråga först `Hur mår du?` och sedan `Barcelona mot Real Madrid`. Det är **en och samma chatt** för båda.
-5. Valfritt: i Render, öppna tjänstens **Environment** och lägg till `FOOTBALL_DATA_TOKEN` med en **ny privat** football-data.org-nyckel. Starta om tjänsten. Den hämtar då schema och arenor i bakgrunden vid start. Eftersom gratisservern tappar lokala filer när den somnar hämtas schemat på nytt efter uppvakning; det kan ta några minuter innan Champions League visas.
+4. Vänta tills byggloggen visar att alla fem ligamodeller tränats och sidan blir **Live**. Öppna Render-länken som slutar på `.onrender.com`. Fråga först `Barcelona mot Real Madrid` och sedan `Vad tror du att det slutar?`. Det är **en och samma chatt** för båda.
+5. Valfritt: i Render, öppna tjänstens **Environment** och lägg till `FOOTBALL_DATA_TOKEN` med en **ny privat** football-data.org-nyckel. Starta om tjänsten. Den hämtar då tillgängliga liga- och cupscheman samt ordinarie hemmaarenor i bakgrunden vid start. Saknar din plan åtkomst till en cup visas ingen påhittad match. Eftersom gratisservern tappar lokala filer när den somnar hämtas schemat på nytt efter uppvakning; det kan ta några minuter innan ett schema visas.
 
 `deploy_build.py` hämtar ligadata och tränar modellerna vid publicering; detta tar tid och misslyckas synligt om en ligamodell inte kan tränas. `public_start.py` hämtar vid behov separat spelschema när servern startar. Render lagrar de byggda modellerna för varje publicering, men **uppdaterar inte resultat automatiskt** förrän du publicerar om sidan. Varje besökares chattar finns bara i den egna webbläsaren. En publicerad sida använder endast en serverprocess; chattbegränsningen nollställs när servern startar om. För många samtidiga användare eller permanent lagring krävs en annan driftlösning.
 
@@ -24,22 +26,22 @@ Den här utgåvan kan publiceras med [Render Free Web Service](https://render.co
 
 **Skapa inte en ny tjänst.** Ersätt programfilerna i det GitHub-repository som den befintliga tjänsten använder. Det enklaste tillförlitliga sättet när filer redan finns är [GitHub Desktop](https://desktop.github.com/): välj **File → Clone repository** för ditt befintliga `matchorakel`-repository, packa upp senaste publiceringsarkivet och kopiera innehållet i dess `matchorakel`-mapp in i den klonade mappen. Ersätt befintliga filer. I GitHub Desktop skriver du en kort text under **Summary**, klickar **Commit to main** och sedan **Push origin**. Render publicerar normalt GitHub-ändringen automatiskt. Kontrollera under **Deploys** att det är den senaste ändringen som är Live.
 
-På Render: öppna **Environment** för din befintliga tjänst och kontrollera att `GROQ_API_KEY` finns där som hemlighet. `football-data.org`-nyckeln är **inte** en AI-nyckel. Om `GROQ_API_KEY` saknas kan sidan fortfarande ge några förprogrammerade hälsningssvar, men den kan inte svara fritt på till exempel frågor om andra ämnen. Om nyckeln finns och allmän chatt ändå misslyckas: kontrollera **Logs** efter `Groq svarade med HTTP ...`. `401` betyder normalt fel nyckel; `429` betyder att en anropsgräns nåtts. Bara statuskoden loggas, aldrig själva nyckeln. En valfri, **ny egen** `FOOTBALL_DATA_TOKEN` i Environment hämtar årets ligamatcher och Champions League-schema vid serverstart. Utan den kan matchhistorik fungera medan datum saknas.
+På Render: öppna **Environment** för din befintliga tjänst och kontrollera att `GROQ_API_KEY` finns där som hemlighet. `football-data.org`-nyckeln är **inte** en AI-nyckel. Matchprognoser och sparad statistik fungerar utan Groq; externa AI-svar på öppna fotbollsfrågor behöver en fungerande språkmodell. Om nyckeln finns men öppna fotbollsfrågor misslyckas: kontrollera **Logs** efter `Groq svarade med HTTP ...`. `401` betyder normalt fel nyckel; `429` betyder att en anropsgräns nåtts; `403` kräver kontroll hos Groq eller Render, särskilt när Playground fungerar men servern nekas. Loggen visar HTTP-status och svarstyp, aldrig själva nyckeln. En valfri, **ny egen** `FOOTBALL_DATA_TOKEN` i Environment hämtar tillgängliga liga- och cupscheman vid serverstart. Utan den kan matchhistorik fungera medan datum saknas.
 
 ## Uppdatera en befintlig installation
 
 1. Stäng webbservern i terminalen med **Ctrl+C**.
-2. Spara `Matchorakel-uppdatera-v10.py` i Downloads och kör i PowerShell:
+2. Spara `Matchorakel-uppdatera-v12.py` i Downloads och kör i PowerShell:
 
 ```powershell
-py "$env:USERPROFILE\Downloads\Matchorakel-uppdatera-v10.py"
+py "$env:USERPROFILE\Downloads\Matchorakel-uppdatera-v12.py"
 ```
 
 Uppdateraren byter programfiler, behåller dina `data`- och `artifacts`-mappar och tränar modellerna med dina matchfiler. Vänta på att den blir färdig. Kör sedan de startkommandon som visas i PowerShell och ladda om sidan med **Ctrl+F5**. Om du saknar CSV-filer, kör `py fetch_data.py` och sedan `py train_model.py` i projektmappen.
 
 Om VS Code visar "Import could not be resolved" trots att `py app.py` fungerar: kör `py -c "import sys; print(sys.executable)"` i PowerShell. Öppna sedan kommandopaletten i VS Code med **Ctrl+Shift+P**, välj **Python: Select Interpreter** och välj Python-filen vars sökväg kommandot skrev ut. Ladda om VS Code-fönstret. Kör `py -m pip install -r requirements.txt` om paketen saknas även med rätt Python.
 
-För samtal om vilket ämne som helst **lokalt utan API-nyckel**: installera Ollama för Windows från länken ovan och kör `ollama pull gemma3:4b` i PowerShell. Modellen är cirka 3,3 GB och kräver ytterligare diskutrymme. Ladda sedan om hemsidan. Ollama på din dator är inte tillgänglig för andra på den publicerade servern. Där använder du en servernyckel till en hostad språkmodell som Groq.
+För språkmodellssvar på öppna fotbollsfrågor **lokalt utan API-nyckel**: installera Ollama för Windows från länken ovan och kör `ollama pull gemma3:4b` i PowerShell. Modellen är cirka 3,3 GB och kräver ytterligare diskutrymme. Ladda sedan om hemsidan. Ollama på din dator är inte tillgänglig för andra på den publicerade servern. Där använder du en servernyckel till en hostad språkmodell som Groq.
 
 För att köra de lokala kontrollerna själv: `py -m unittest discover -s tests -v`. De testar bland annat HTTP-svaren, Champions League-frågor och följdfrågor med ett konstgjort spelschema. De kräver ingen API-nyckel.
 
@@ -73,9 +75,9 @@ py train_model.py
 
 Starta om servern efteråt. Befintliga äldre säsonger hämtas inte om. Notera källa, säsonger och datum då ni hämtade data i rapporten. Om nedladdningen misslyckas, hämta CSV-filerna manuellt från länkarna ovan och lägg dem i rätt mappar. Filerna måste innehålla `Date`, `HomeTeam`, `AwayTeam`, `FTHG`, `FTAG`, `FTR`.
 
-### Spelschema och Champions League
+### Spelschema för ligor och cuper
 
-[football-data.org](https://www.football-data.org/coverage) har scheman för de fem ligorna och Champions League. För att använda API:et behöver du registrera en egen nyckel där. Kör i projektmappen:
+[football-data.org](https://www.football-data.org/coverage) har scheman för de fem ligorna och vissa cuper beroende på din plan. Programmet försöker även hämta FA Cup, Copa del Rey, Europa League, Conference League, DFB-Pokal och Coppa Italia. För att använda API:et behöver du registrera en egen nyckel där. Kör i projektmappen:
 
 ```powershell
 py update_fixtures.py
@@ -85,6 +87,13 @@ Enbart Champions League, utan väntan mellan ligorna:
 
 ```powershell
 py update_fixtures.py --league UCL
+```
+
+Enbart en annan cup, till exempel FA Cup eller Copa del Rey:
+
+```powershell
+py update_fixtures.py --league FAC
+py update_fixtures.py --league CDR
 ```
 
 Skriv nyckeln när terminalen frågar (den visas inte på skärmen). Dela inte nyckeln i chatten. Skriptet hämtar publicerade matcher för API:ets aktiva säsong, sparar uppgifterna i `data/fixtures.json` direkt efter varje lyckad liga och visar en förklaring om API:et svarar med ett fel. Vid hämtning av alla ligor väntar det mellan anrop för att passa gratisnivån. Starta om `py app.py` efteråt. Kör kommandot på nytt när du vill uppdatera schemat; det uppdaterar **inte** den tränade matchmodellen. För nya spelade resultat: kör även `py fetch_data.py` följt av `py train_model.py` och starta om appen.
