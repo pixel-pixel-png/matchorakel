@@ -11,7 +11,7 @@
     <a class="report-back" href="/">← Tillbaka till chatten</a>
     <span class="welcome-badge">METOD & RESULTAT</span>
     <h1>Hur bra är modellerna?</h1>
-    <p class="report-intro">Premier League och La Liga tränas separat. För varje liga används de första 60 % av matchdagarna för träning, nästa 20 % för modellval och sista 20 % för utvärdering. Matcher från samma dag hålls ihop.</p>
+    <p class="report-intro">De fem ligorna tränas separat. För varje liga används de första 60 % av matchdagarna för träning, nästa 20 % för modellval och sista 20 % för utvärdering. Matcher från samma dag hålls ihop. Resultattips för exakta måltal har inte testats separat.</p>
     {% if not reports %}<div class="report-card"><p>Inga nya resultat finns ännu. Kör <code>py train_model.py</code> och ladda om sidan.</p></div>{% endif %}
     {% for report in reports %}
     <section class="report-card">

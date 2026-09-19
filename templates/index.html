@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f8f8f5">
-  <title>Matchorakel — fotboll med perspektiv</title>
+  <meta name="theme-color" content="#212121">
+  <title>Matchorakel — matchanalys</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
@@ -26,13 +26,13 @@
       <nav id="conversations" class="conversations" aria-label="Tidigare analyser"></nav>
       <div class="undo-toast" id="undoToast" role="status" hidden></div>
       <a class="report-link" href="/evaluation">Se modellernas resultat <span aria-hidden="true">↗</span></a>
-      <div class="sidebar-bottom"><div class="live-dot" aria-hidden="true"></div><div><strong>Fem ligor · en chatt</strong><span>Ligan känns igen automatiskt</span></div></div>
+      <div class="sidebar-bottom"><div class="live-dot" aria-hidden="true"></div><div><strong>Fem ligor och cuper</strong><span>Fråga i samma chatt</span></div></div>
     </aside>
 
     <div class="workspace">
       <header class="topbar">
         <div class="topbar-left"><button id="openSidebar" class="icon-button menu-button" type="button" aria-label="Öppna meny" aria-controls="sidebar" aria-expanded="false">☰</button><span class="topbar-title">Matchanalys</span><span class="topbar-divider"></span><span class="topbar-subtitle">Premier League · La Liga · Bundesliga · Serie A · Ligue 1</span></div>
-        <span class="version-label"><span class="version-dot"></span> MATCHORAKEL / V10</span>
+        <span class="version-label"><span class="version-dot"></span> MATCHORAKEL / V12</span>
       </header>
 
       <main class="chat-scroller" id="chat" aria-live="polite" aria-relevant="additions">
@@ -45,7 +45,7 @@
           <input id="message" name="message" maxlength="500" autocomplete="off" placeholder="Skriv till Matchorakel ..." required>
           <button id="sendButton" type="submit" aria-label="Skicka fråga"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         </form>
-        <p class="composer-caption" id="chatCapability">Matchorakel · en chatt för alla frågor</p>
+        <p class="composer-caption">Prognoser bygger på historik och är inga garantier. <span id="chatCapability">Fråga om fotboll.</span></p>
       </div>
       <section class="tool-panel" id="toolPanel" hidden aria-label="Verktyg">
         <div class="tool-panel-header"><h2 id="panelTitle">Matcher</h2><button id="closePanel" type="button" aria-label="Stäng panel">×</button></div>
