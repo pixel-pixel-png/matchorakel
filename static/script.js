@@ -6,6 +6,7 @@ const content = document.querySelector('#chatContent');
 const conversationsNode = document.querySelector('#conversations');
 const undoToast = document.querySelector('#undoToast');
 const sidebar = document.querySelector('#sidebar');
+const appShell = document.querySelector('.app-shell');
 const scrim = document.querySelector('#scrim');
 const openSidebarButton = document.querySelector('#openSidebar');
 const panel = document.querySelector('#toolPanel');
@@ -15,7 +16,9 @@ const searchConversations = document.querySelector('#searchConversations');
 const chatCapability = document.querySelector('#chatCapability');
 const STORAGE_KEY = 'matchorakel-conversations-v1';
 const FAVORITES_KEY = 'matchorakel-favorites-v1';
-const LEAGUE_NAMES = {PL: 'Premier League', LL: 'La Liga', BL: 'Bundesliga', SA: 'Serie A', L1: 'Ligue 1'};
+const LEAGUE_NAMES = {PL: 'Premier League', LL: 'La Liga', BL: 'Bundesliga', SA: 'Serie A', L1: 'Ligue 1',
+  UCL: 'Champions League', FAC: 'FA Cup', CDR: 'Copa del Rey', EL: 'Europa League',
+  UECL: 'Conference League', DFB: 'DFB-Pokal', CIT: 'Coppa Italia'};
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -27,7 +30,10 @@ function element(tag, className, text) {
 function readConversations() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
-    return Array.isArray(saved) ? saved.filter(item => item && typeof item.id === 'string' && Array.isArray(item.messages)).slice(0, 30) : [];
+    return Array.isArray(saved) ? saved.filter(item => item && typeof item.id === 'string' &&
+      typeof item.title === 'string' && Array.isArray(item.messages)).slice(0, 30).map(item => ({
+        ...item, messages: item.messages.filter(turn => turn && typeof turn.question === 'string').slice(-100)
+      })) : [];
   } catch {
     return [];
   }
@@ -36,9 +42,11 @@ function readConversations() {
 let conversations = readConversations();
 let activeId = conversations[0]?.id || null;
 let busy = false;
+let pendingChat = null;
 let undoTimer;
 let matchesFilter = 'all';
 let matchesVisible = 8;
+let panelRequestId = 0;
 let favorites = [];
 try { favorites = JSON.parse(localStorage.getItem(FAVORITES_KEY) || '[]'); } catch { favorites = []; }
 if (!Array.isArray(favorites)) favorites = [];
@@ -50,10 +58,11 @@ function toggleFavorite(name) {
   try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(favorites)); } catch { /* Lokal lagring är valfri. */ }
 }
 
-function closePanel() { panel.hidden = true; }
+function closePanel() { panel.hidden = true; panelRequestId++; }
 document.querySelector('#closePanel').addEventListener('click', closePanel);
 
 async function showMatches() {
+  const requestId = ++panelRequestId;
   panel.hidden = false;
   panelTitle.textContent = 'Matcher och favoritlag';
   panelBody.replaceChildren(element('p', 'panel-muted', 'Hämtar publicerade matcher ...'));
@@ -61,10 +70,17 @@ async function showMatches() {
     const response = await fetch('/api/fixtures');
     if (!response.ok) throw new Error('Kunde inte läsa schemat.');
     const fixtures = await response.json();
+    if (requestId !== panelRequestId) return;
+    if (!Array.isArray(fixtures)) throw new Error('Schemat hade ett oväntat format. Försök senare.');
+    const usableFixtures = fixtures.filter(item => item && typeof item === 'object' &&
+      typeof item.home === 'string' && typeof item.away === 'string' && typeof item.league === 'string');
     panelBody.replaceChildren();
     const filters = element('div', 'match-filters');
     for (const [code, label] of [['all', 'Alla'], ['favorites', 'Favoriter'], ['PL', 'Premier League'],
-      ['LL', 'La Liga'], ['BL', 'Bundesliga'], ['SA', 'Serie A'], ['L1', 'Ligue 1'], ['UCL', 'Champions League']]) {
+      ['LL', 'La Liga'], ['BL', 'Bundesliga'], ['SA', 'Serie A'], ['L1', 'Ligue 1'],
+      ['UCL', 'Champions League'], ['FAC', 'FA Cup'], ['CDR', 'Copa del Rey'],
+      ['EL', 'Europa League'], ['UECL', 'Conference League'],
+      ['DFB', 'DFB-Pokal'], ['CIT', 'Coppa Italia']]) {
       const button = element('button', `match-filter${matchesFilter === code ? ' active' : ''}`, label);
       button.type = 'button';
       button.addEventListener('click', () => { matchesFilter = code; matchesVisible = 8; drawMatches(); });
@@ -75,18 +91,20 @@ async function showMatches() {
     panelBody.append(list);
     function drawMatches() {
       for (const button of filters.children) button.classList.toggle('active',
-        button.textContent === ({all:'Alla', favorites:'Favoriter', ...LEAGUE_NAMES, UCL:'Champions League'})[matchesFilter]);
+        button.textContent === ({all:'Alla', favorites:'Favoriter', ...LEAGUE_NAMES})[matchesFilter]);
       list.replaceChildren();
-      const games = fixtures.filter(item => matchesFilter === 'all' ||
+      const games = usableFixtures.filter(item => matchesFilter === 'all' ||
         (matchesFilter === 'favorites' ? [item.home, item.away].some(team => favorites.includes(favoriteKey(team))) : item.league === matchesFilter));
       list.append(element('p', 'panel-muted', `${games.length} kommande matcher · visa ${Math.min(matchesVisible, games.length)}`));
-      if (!games.length) list.append(element('p', 'panel-muted', 'Inga matcher här ännu. Prova en annan liga eller uppdatera spelschemat.'));
+      if (!games.length) list.append(element('p', 'panel-muted', usableFixtures.length
+        ? 'Inga matcher i detta filter. Prova Alla eller en annan liga.'
+        : 'Inga framtida matcher har hämtats till servern. Sidans administratör behöver uppdatera spelschemat.'));
       for (const game of games.slice(0, matchesVisible)) {
         const row = element('div', 'match-row');
         const date = game.utc_date ? new Date(game.utc_date) : null;
         const when = date && !Number.isNaN(date.getTime())
           ? new Intl.DateTimeFormat('sv-SE', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit', timeZone:'Europe/Stockholm'}).format(date) : 'Datum saknas';
-        row.append(element('span', 'match-row-date', `${when} · ${LEAGUE_NAMES[game.league] || 'Champions League'}`));
+        row.append(element('span', 'match-row-date', `${when} · ${LEAGUE_NAMES[game.league] || 'Okänd tävling'}`));
         row.append(element('strong', 'match-row-teams', `${game.home} – ${game.away}`));
         row.append(element('span', 'match-row-venue', game.venue ?
           `${game.venue_confidence === 'confirmed' ? 'Arena' : 'Trolig hemmaarena'}: ${game.venue}` :
@@ -118,16 +136,23 @@ async function showMatches() {
       }
     }
     drawMatches();
-  } catch (error) { panelBody.replaceChildren(element('p', 'panel-muted', error.message)); }
+  } catch (error) { if (requestId === panelRequestId) {
+    const retry = element('button', 'panel-action', 'Försök igen');
+    retry.type = 'button'; retry.addEventListener('click', showMatches);
+    panelBody.replaceChildren(element('p', 'panel-muted', error.message), retry);
+  } }
 }
 
 async function showDataStatus() {
+  const requestId = ++panelRequestId;
   panel.hidden = false;
   panelTitle.textContent = 'Uppdatera data';
   panelBody.replaceChildren(element('p', 'panel-muted', 'Hämtar status ...'));
   try {
     const response = await fetch('/api/data/status');
+    if (!response.ok) throw new Error('Kunde inte hämta datastatus. Försök igen.');
     const data = await response.json();
+    if (requestId !== panelRequestId) return;
     panelBody.replaceChildren(element('p', 'panel-muted', `${data.fixtures} matcher i schemat. Dina sparade data och modeller raderas inte vid en uppdatering.`));
     for (const league of Object.values(data.leagues)) {
       panelBody.append(element('p', 'panel-data-row', `${league.name}: ${league.files} säsongsfiler · modell ${league.trained ? 'klar' : 'saknas'}`));
@@ -156,7 +181,11 @@ async function showDataStatus() {
     panelBody.append(fixtureButton, resultsButton, status);
     for (const entry of data.job.log.slice(-8)) panelBody.append(element('p', 'panel-log', entry));
     if (data.job.running) setTimeout(() => { if (!panel.hidden && panelTitle.textContent === 'Uppdatera data') showDataStatus(); }, 6000);
-  } catch (error) { panelBody.replaceChildren(element('p', 'panel-muted', error.message)); }
+  } catch (error) { if (requestId === panelRequestId) {
+    const retry = element('button', 'panel-action', 'Försök igen');
+    retry.type = 'button'; retry.addEventListener('click', showDataStatus);
+    panelBody.replaceChildren(element('p', 'panel-muted', error.message), retry);
+  } }
 }
 
 document.querySelector('#openMatches').addEventListener('click', () => { closeMenu(); showMatches(); });
@@ -180,7 +209,8 @@ function scrollToBottom() {
 function closeMenu() {
   sidebar.classList.remove('open');
   scrim.hidden = true;
-  openSidebarButton.setAttribute('aria-expanded', 'false');
+  openSidebarButton.setAttribute('aria-expanded', String(!appShell.classList.contains('sidebar-collapsed') &&
+    Boolean(window.matchMedia?.('(min-width: 721px)').matches)));
 }
 
 function renderSidebar() {
@@ -188,15 +218,18 @@ function renderSidebar() {
   if (!conversations.length) {
     conversationsNode.append(element('p', 'empty-history', 'Dina analyser visas här när du har ställt din första fråga.'));
   }
+  let shown = 0;
   for (const conversation of conversations) {
     const query = searchConversations.value.trim().toLocaleLowerCase('sv');
     if (query && !conversation.title.toLocaleLowerCase('sv').includes(query) &&
         !conversation.messages.some(item => item.question.toLocaleLowerCase('sv').includes(query))) continue;
+    shown++;
     const row = element('div', 'conversation-row');
     const button = element('button', `conversation${conversation.id === activeId ? ' active' : ''}`, conversation.title);
     button.type = 'button';
     button.title = conversation.title;
     button.addEventListener('click', () => {
+      if (pendingChat && activeId !== conversation.id) pendingChat.abort();
       activeId = conversation.id;
       closeMenu();
       render();
@@ -208,6 +241,7 @@ function renderSidebar() {
     remove.addEventListener('click', () => {
       const position = conversations.findIndex(item => item.id === conversation.id);
       const wasActive = activeId === conversation.id;
+      if (pendingChat && wasActive) pendingChat.abort();
       conversations = conversations.filter(item => item.id !== conversation.id);
       if (wasActive) activeId = null;
       saveConversations();
@@ -231,18 +265,18 @@ function renderSidebar() {
     row.append(button, remove);
     conversationsNode.append(row);
   }
+  if (conversations.length && !shown) conversationsNode.append(element('p', 'empty-history', 'Inga chattar matchar sökningen.'));
 }
 searchConversations.addEventListener('input', renderSidebar);
 
 function renderWelcome() {
   const welcome = element('section', 'welcome');
-  welcome.append(element('span', 'welcome-badge', 'Din matchanalys börjar här'));
+  welcome.append(element('span', 'welcome-badge', 'Matchorakel'));
   const heading = element('h1');
-  heading.append('Få ett nytt perspektiv på ');
-  heading.append(element('em', '', 'nästa match.'));
+  heading.append('Vilken match vill du analysera?');
   welcome.append(heading);
-  welcome.append(element('p', '', 'Fem stora ligor i samma chatt. Skriv två lag för en match, eller fråga om form, mål, skott och kort. Jag hittar ligan och du kan fortsätta med följdfrågor.'));
-  welcome.append(element('div', 'suggestion-title', 'PROVA EN FRÅGA'));
+  welcome.append(element('p', '', 'Skriv två lag eller fråga om form, mål och matchdatum.'));
+  welcome.append(element('div', 'suggestion-title', 'Exempel'));
   const suggestions = element('div', 'suggestions');
   const examples = ['Barcelona mot Real Madrid', 'Barcelona mot PSG, vad är vanligast?',
     'När spelar Barcelona i Champions League?', 'Bayern mot Dortmund'];
@@ -262,7 +296,7 @@ function renderWelcome() {
 
 function responseHeader(box) {
   const top = element('div', 'response-top');
-  top.append(element('span', 'bot-mark', 'M'), element('span', 'response-meta', 'MATCHORAKEL · ANALYS'));
+  top.append(element('span', 'bot-mark', 'M'), element('span', 'response-meta', 'Matchorakel'));
   box.append(top);
 }
 
@@ -279,8 +313,7 @@ function renderFixture(item) {
     : item.venue ? `Bekräftad arena: ${item.venue}` : 'Arena ännu inte bekräftad';
   row.append(element('span', 'fixture-venue', venueText));
   const lastSync = item.synced_at ? new Date(item.synced_at) : null;
-  const stale = !lastSync || Number.isNaN(lastSync.getTime()) || Date.now() - lastSync.getTime() > 48 * 3600 * 1000;
-  row.append(element('small', 'fixture-source', `Schema: ${item.source || 'okänt'} · hämtat ${lastSync && !Number.isNaN(lastSync.getTime()) ? lastSync.toLocaleDateString('sv-SE') : 'okänt datum'}. ${item.venue_confidence === 'likely_home' ? `Arena: ${item.venue_source || 'lagprofil'} · lagets ordinarie arena kan skilja sig från spelplatsen. ` : ''}${stale ? 'Uppgiften kan vara föråldrad – uppdatera spelschemat. ' : ''}Tider och arena kan ändras.`));
+  row.append(element('small', 'fixture-source', `Källa: ${item.source || 'okänd'} · hämtat ${lastSync && !Number.isNaN(lastSync.getTime()) ? lastSync.toLocaleDateString('sv-SE') : 'okänt datum'}`));
   return row;
 }
 
@@ -288,12 +321,22 @@ function renderFixtures(box, data) {
   box.append(element('div', 'result-kicker', `${data.league_name} · PUBLICERAT SPELSCHEMA`));
   box.append(element('h2', 'result-title', data.title || 'Kommande matcher'));
   if (data.summary) box.append(element('p', 'result-summary', data.summary));
-  for (const match of data.fixtures || []) box.append(renderFixture(match));
-  if (data.league === 'UCL') box.append(element('p', 'source-note', 'Champions League visas som spelschema. Ingen separat Champions League-modell är tränad ännu.'));
+  for (const match of (Array.isArray(data.fixtures) ? data.fixtures : []))
+    if (match && typeof match.home === 'string' && typeof match.away === 'string') box.append(renderFixture(match));
+  if (['UCL', 'FAC', 'CDR', 'EL', 'UECL', 'DFB', 'CIT'].includes(data.league))
+    box.append(element('p', 'source-note', `${data.league_name} visas som spelschema. Ingen separat modell har tränats för den cupen.`));
 }
 
 function renderPrediction(box, data) {
-  const {home, away, probabilities: p, features: f} = data;
+  const {home, away, probabilities: p} = data;
+  if (typeof home !== 'string' || typeof away !== 'string' ||
+      !p || !['H', 'D', 'A'].every(key => p[key] !== null && p[key] !== undefined &&
+        Number.isFinite(Number(p[key])) && Number(p[key]) >= 0 && Number(p[key]) <= 100) ||
+      Math.abs(['H', 'D', 'A'].reduce((sum, key) => sum + Number(p[key]), 0) - 100) > 0.3) {
+    box.append(element('p', 'answer-text', 'Prognosens data saknas eller är ogiltig. Försök igen efter att modellerna uppdaterats.'));
+    return;
+  }
+  const f = data.features || {};
   const labels = {H: `${home} vinner`, D: 'Oavgjort', A: `${away} vinner`};
   const favorite = ['H', 'D', 'A'].reduce((best, key) => p[key] > p[best] ? key : best, 'H');
   box.append(element('div', 'result-kicker', `${data.league_name} · MATCHPROGNOS`));
@@ -301,7 +344,33 @@ function renderPrediction(box, data) {
   fixture.append(teamBadge(home), element('h2', 'result-title', `${home} – ${away}`), teamBadge(away));
   box.append(fixture);
   if (data.fixture) box.append(renderFixture(data.fixture));
-  box.append(element('p', 'result-summary', `Modellen ger ${labels[favorite].toLowerCase()} högst sannolikhet. Alla tre utfall är fortfarande möjliga.`));
+  const hasScoreline = data.scoreline && Number.isInteger(data.scoreline.home) && Number.isInteger(data.scoreline.away);
+  if (hasScoreline) {
+    const score = element('div', 'score-pick');
+    const label = element('div', 'score-pick-label', 'Prediction');
+    const value = element('strong', 'score-pick-value', `${home} ${data.scoreline.home}–${data.scoreline.away} ${away}`);
+    const explanation = element('p', 'score-pick-detail',
+      `${labels[favorite]} ${Number(p[favorite]).toFixed(1)} %. ${data.scoreline.source || 'Uppskattat målantal'}.`);
+    score.append(label, value, explanation);
+    box.append(score);
+  }
+  if (!hasScoreline) box.append(element('p', 'result-summary', `${labels[favorite]} ${Number(p[favorite]).toFixed(1)} %. Exakt resultattips saknas.`));
+  if (['home_points','away_points','home_scored','away_scored','home_conceded','away_conceded'].every(key => Number.isFinite(f[key]))) {
+    const compared = [];
+    if (f.home_points !== f.away_points) {
+      const stronger = f.home_points > f.away_points ? home : away;
+      compared.push(`${stronger} har tagit ${Math.abs(f.home_points - f.away_points)} fler poäng på de fem senaste ligamatcherna.`);
+    }
+    if (f.home_scored !== f.away_scored) {
+      const attack = f.home_scored > f.away_scored ? home : away;
+      compared.push(`${attack} har gjort ${Math.abs(f.home_scored - f.away_scored)} fler mål under samma period.`);
+    }
+    if (f.home_conceded !== f.away_conceded) {
+      const defense = f.home_conceded < f.away_conceded ? home : away;
+      compared.push(`${defense} har släppt in ${Math.abs(f.home_conceded - f.away_conceded)} färre mål.`);
+    }
+    if (compared.length) box.append(element('p', 'result-summary', compared.slice(0, 2).join(' ')));
+  }
   const outcomes = element('div', 'outcomes');
   for (const key of ['H', 'D', 'A']) {
     const card = element('div', `outcome${key === favorite ? ' best' : ''}`);
@@ -315,9 +384,12 @@ function renderPrediction(box, data) {
     outcomes.append(card);
   }
   box.append(outcomes);
-  if (data.goal_markets && Object.keys(data.goal_markets).length) {
-    const summary = element('p', 'result-summary', 'Målmarknader där en separat målmodell slog baslinjen på valideringsperioden: ' +
-      Object.entries(data.goal_markets).map(([key, value]) => `${{over_1_5:'minst 2 mål',over_2_5:'minst 3 mål',both_score:'båda lagen gör mål'}[key]} ${Number(value).toFixed(1)} %`).join(' · ') + '.');
+  const markets = data.goal_markets && typeof data.goal_markets === 'object' ?
+    Object.entries(data.goal_markets).filter(([key, value]) =>
+      ['over_1_5', 'over_2_5', 'both_score'].includes(key) && Number.isFinite(Number(value))) : [];
+  if (markets.length) {
+    const summary = element('p', 'result-summary', 'Målmodell: ' +
+      markets.map(([key, value]) => `${{over_1_5:'minst 2 mål',over_2_5:'minst 3 mål',both_score:'båda lagen gör mål'}[key]} ${Number(value).toFixed(1)} %`).join(' · ') + '.');
     box.append(summary);
   }
   const facts = element('div', 'facts');
@@ -327,12 +399,16 @@ function renderPrediction(box, data) {
   ]) {
     const block = element('div');
     block.append(element('h3', 'fact-heading', `${team} · senaste 5`));
-    const record = recent ? `${recent.wins} vinster, ${recent.draws} oavgjorda, ${recent.losses} förluster. ` : '';
-    block.append(element('p', 'fact-text', `${record}${points} av 15 poäng · ${scored} gjorda mål · ${conceded} insläppta mål i ligan.`));
-    if (recent?.sequence) {
+    const record = recent && [recent.wins, recent.draws, recent.losses].every(Number.isFinite)
+      ? `${recent.wins} vinster, ${recent.draws} oavgjorda, ${recent.losses} förluster. ` : '';
+    block.append(element('p', 'fact-text', [points, scored, conceded].every(Number.isFinite)
+      ? `${record}${points} av 15 poäng · ${scored} gjorda mål · ${conceded} insläppta mål i ligan.`
+      : 'Lagstatistik saknas i svaret.'));
+    if (Array.isArray(recent?.sequence)) {
       const strip = element('div', 'form-sequence');
-      strip.setAttribute('aria-label', `Form, äldst först: ${recent.sequence.map(game => game.points === 3 ? 'vinst' : game.points === 1 ? 'oavgjort' : 'förlust').join(', ')}`);
-      for (const game of recent.sequence) {
+      const games = recent.sequence.filter(game => game && typeof game === 'object');
+      strip.setAttribute('aria-label', `Form, äldst först: ${games.map(game => game.points === 3 ? 'vinst' : game.points === 1 ? 'oavgjort' : 'förlust').join(', ')}`);
+      for (const game of games) {
         const status = game.points === 3 ? 'win' : game.points === 1 ? 'draw' : 'loss';
         const pill = element('span', `form-pill ${status}`, status === 'win' ? 'V' : status === 'draw' ? 'O' : 'F');
         pill.setAttribute('aria-hidden', 'true');
@@ -343,10 +419,9 @@ function renderPrediction(box, data) {
     facts.append(block);
   }
   box.append(facts);
-  if (data.additional_factors && Object.keys(data.additional_factors).length) {
-    box.append(element('p', 'source-note', `Modellen väger också in längre lagstyrka (hemma ${Math.round(data.additional_factors.home_elo)}, borta ${Math.round(data.additional_factors.away_elo)}) och antal vilodagar före matchen (hemma ${data.additional_factors.home_rest_days}, borta ${data.additional_factors.away_rest_days}). Dessa värden byggs enbart av tidigare ligamatcher.`));
-  }
-  box.append(element('p', 'source-note', `${data.league_name} · ${data.model} · Senaste match i modellens underlag: ${data.as_of}. ${data.fixture ? 'Datum och arena kommer från separat spelschema.' : 'Inget kommande datum har verifierats för den här matchen.'} Skador, startelvor och liveinformation ingår inte.`));
+  if (data.additional_factors && Number.isFinite(Number(data.additional_factors.home_elo)) && Number.isFinite(Number(data.additional_factors.away_elo)))
+    box.append(element('p', 'source-note', `Lagstyrka i modellen: ${Math.round(data.additional_factors.home_elo)} / ${Math.round(data.additional_factors.away_elo)} Elo.`));
+  box.append(element('p', 'source-note', `${data.league_name || 'Liga'} · senaste resultat ${data.as_of || 'okänt'}`));
   if (data.fixture?.utc_date) {
     if (data.actual_result?.status === 'finished') {
       const result = data.actual_result;
@@ -386,7 +461,8 @@ function renderInsight(box, data) {
   box.append(element('p', 'result-summary', data.summary));
   if (data.fixture) box.append(renderFixture(data.fixture));
   const grid = element('div', 'insight-grid');
-  for (const item of data.cards || []) {
+  for (const item of (Array.isArray(data.cards) ? data.cards : [])) {
+    if (!item || typeof item !== 'object') continue;
     const card = element('div', 'insight-card');
     card.append(element('span', 'insight-label', item.label));
     card.append(element('strong', 'insight-value', item.value));
@@ -394,13 +470,15 @@ function renderInsight(box, data) {
     grid.append(card);
   }
   box.append(grid);
-  if (data.teams?.length) {
+  if (Array.isArray(data.teams) && data.teams.length) {
     const teams = element('div', 'insight-teams');
     for (const team of data.teams) {
+      if (!team || typeof team.name !== 'string') continue;
       const line = element('div', 'insight-team');
       line.append(teamBadge(team.name), element('span', 'insight-team-name', team.name));
       const games = element('div', 'form-sequence');
-      for (const game of team.sequence || []) {
+      for (const game of (Array.isArray(team.sequence) ? team.sequence : [])) {
+        if (!game || typeof game !== 'object') continue;
         const status = game.points === 3 ? 'win' : game.points === 1 ? 'draw' : 'loss';
         const pill = element('span', `form-pill ${status}`, status === 'win' ? 'V' : status === 'draw' ? 'O' : 'F');
         pill.title = `${status === 'win' ? 'Vinst' : status === 'draw' ? 'Oavgjort' : 'Förlust'} · ${game.scored}–${game.conceded}`;
@@ -411,7 +489,7 @@ function renderInsight(box, data) {
     }
     box.append(teams);
   }
-  box.append(element('p', 'source-note', `${data.source_note || 'Källa: historiska ligamatcher' } · Senaste resultat i underlaget: ${data.as_of || 'okänt datum'}. Historiken är inte en garanti för nästa match.`));
+  box.append(element('p', 'source-note', `${data.source_note || 'Historiska ligamatcher'} · senast ${data.as_of || 'okänt'}`));
 }
 
 function renderTurn(turn, latest) {
@@ -420,7 +498,8 @@ function renderTurn(turn, latest) {
   const box = element('div', `response${turn.error ? ' error-response' : ''}`);
   responseHeader(box);
   if (turn.combined) {
-    turn.combined.parts.forEach((part, index) => {
+    (Array.isArray(turn.combined.parts) ? turn.combined.parts : []).forEach((part, index) => {
+      if (!part || typeof part !== 'object') return;
       if (index) box.append(element('hr', 'answer-divider'));
       if (part.kind === 'prediction') renderPrediction(box, part);
       else if (part.kind === 'insight') renderInsight(box, part);
@@ -443,7 +522,12 @@ function renderTurn(turn, latest) {
     loading.append(dots);
     box.append(loading);
   }
-  if (turn.analysisId) box.append(element('small', 'source-note', `Svar ${turn.analysisId} · ${new Date(turn.createdAt).toLocaleString('sv-SE')}`));
+  if (turn.error) {
+    const retry = element('button', 'result-check', 'Försök igen');
+    retry.type = 'button';
+    retry.addEventListener('click', () => { if (!busy) { input.value = turn.question; form.requestSubmit(); } });
+    box.append(retry);
+  }
   wrapper.append(box);
   if (latest && !turn.error && Array.isArray(turn.suggestions) && turn.suggestions.length) {
     const section = element('div', 'followups');
@@ -465,7 +549,7 @@ function renderTurn(turn, latest) {
 }
 
 function render() {
-  input.placeholder = 'Fråga om vad du vill ...';
+  input.placeholder = 'Fråga om en match eller ett lag ...';
   renderSidebar();
   content.replaceChildren();
   const conversation = activeConversation();
@@ -475,6 +559,11 @@ function render() {
 }
 
 openSidebarButton.addEventListener('click', () => {
+  if (window.matchMedia?.('(min-width: 721px)').matches) {
+    appShell.classList.toggle('sidebar-collapsed');
+    openSidebarButton.setAttribute('aria-expanded', String(!appShell.classList.contains('sidebar-collapsed')));
+    return;
+  }
   const expanded = sidebar.classList.toggle('open');
   scrim.hidden = !expanded;
   openSidebarButton.setAttribute('aria-expanded', String(expanded));
@@ -482,6 +571,7 @@ openSidebarButton.addEventListener('click', () => {
 document.querySelector('#closeSidebar').addEventListener('click', closeMenu);
 scrim.addEventListener('click', closeMenu);
 document.querySelector('#newChat').addEventListener('click', () => {
+  if (pendingChat) pendingChat.abort();
   activeId = null;
   closeMenu();
   render();
@@ -509,16 +599,28 @@ form.addEventListener('submit', async event => {
   input.value = '';
   busy = true;
   sendButton.disabled = true;
+  const controller = new AbortController();
+  pendingChat = controller;
+  const timeout = setTimeout(() => controller.abort(), 60000);
   saveConversations();
   render();
   try {
     const response = await fetch('/chat', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({message: question, context, history})
+      body: JSON.stringify({message: question, context, history}), signal: controller.signal
     });
-    const data = await response.json();
+    const data = await response.json().catch(() => { throw new Error('Servern gav ett ogiltigt svar. Försök igen.'); });
+    if (controller.signal.aborted) return;
     if (!response.ok) throw new Error(data.error || 'Kunde inte analysera matchen.');
+    if (!data || typeof data !== 'object' || typeof data.kind !== 'string') throw new Error('Svaret saknar matchdata. Försök igen.');
+    if ((data.kind === 'text' && (typeof data.response !== 'string' || !data.response.trim())) ||
+        (data.kind === 'fixtures' && !Array.isArray(data.fixtures)) ||
+        (data.kind === 'insight' && !Array.isArray(data.cards)) ||
+        (data.kind === 'combined' && !Array.isArray(data.parts)) ||
+        (data.kind === 'prediction' && (!data.probabilities || typeof data.probabilities !== 'object')) ||
+        !['text','fixtures','insight','combined','prediction'].includes(data.kind))
+      throw new Error('Servern gav ett ofullständigt svar. Försök igen.');
     turn.suggestions = Array.isArray(data.suggestions) ? data.suggestions : [];
     turn.analysisId = data.analysis_id;
     turn.createdAt = data.created_at;
@@ -538,20 +640,28 @@ form.addEventListener('submit', async event => {
       turn.prediction = data;
     }
   } catch (error) {
-    turn.error = error.message || 'Kunde inte ansluta till servern.';
+    turn.error = controller.signal.aborted ? 'Anropet avbröts eller tog för lång tid. Försök igen.' : error.message || 'Kunde inte ansluta till servern.';
   } finally {
+    clearTimeout(timeout);
+    if (pendingChat === controller) pendingChat = null;
     busy = false;
     sendButton.disabled = false;
     saveConversations();
     if (activeId === requestedId) render();
     input.focus();
+    refreshCapability();
   }
 });
 
 render();
-fetch('/api/chat/status').then(reply => reply.json()).then(data => {
+function refreshCapability() { return fetch('/api/chat/status').then(reply => reply.json()).then(data => {
   document.querySelector('#openData').hidden = Boolean(data.public);
-  chatCapability.textContent = data.language_model
-    ? 'Fråga om vad du vill · matchfakta kommer från sparade källor'
-    : 'Samtal om alla ämnen kräver en AI-anslutning på servern';
-}).catch(() => { chatCapability.textContent = 'Matchorakel · kontrollera att anslutningen fungerar'; });
+  chatCapability.textContent = data.ai_health === 'failed'
+    ? `AI-tjänsten svarar inte${Number.isInteger(data.ai_error_code) ? ` (HTTP ${data.ai_error_code})` : ''} · matchfakta fungerar fortfarande`
+    : data.ai_health === 'ok'
+    ? 'AI-anslutningen fungerar'
+    : data.language_model
+    ? 'AI är inställd men anslutningen är ännu inte testad'
+    : 'Fotbollsfrågor fungerar utan AI-anslutning';
+}).catch(() => { chatCapability.textContent = 'Matchorakel · kontrollera att anslutningen fungerar'; }); }
+refreshCapability();
