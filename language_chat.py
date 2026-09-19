@@ -20,6 +20,8 @@ INSTRUCTIONS = (
 logger = logging.getLogger(__name__)
 groq_health = 'unverified'
 groq_last_error_code = None
+gemini_health = 'unverified'
+gemini_last_error_code = None
 other_health = 'unverified'
 
 
@@ -38,12 +40,16 @@ def clean_ai_answer(value):
 
 
 def connection_health():
+    if os.environ.get('GEMINI_API_KEY', '').strip():
+        return gemini_health
     if os.environ.get('GROQ_API_KEY', '').strip():
         return groq_health
     return 'unconfigured' if not os.environ.get('OPENAI_API_KEY', '').strip() and not ollama_model() else other_health
 
 
 def connection_error_code():
+    if os.environ.get('GEMINI_API_KEY', '').strip():
+        return gemini_last_error_code if gemini_health == 'failed' else None
     return groq_last_error_code if groq_health == 'failed' and os.environ.get('GROQ_API_KEY', '').strip() else None
 
 
@@ -63,6 +69,8 @@ def ollama_model():
 
 
 def language_status():
+    if os.environ.get('GEMINI_API_KEY', '').strip():
+        return 'AI ansluten'
     if os.environ.get('GROQ_API_KEY', '').strip():
         return 'AI ansluten'
     if os.environ.get('OPENAI_API_KEY', '').strip():
@@ -71,13 +79,51 @@ def language_status():
 
 
 def general_answer(question, facts, history=None):
-    global groq_health, groq_last_error_code, other_health
+    global groq_health, groq_last_error_code, gemini_health, gemini_last_error_code, other_health
+    gemini_key = os.environ.get('GEMINI_API_KEY', '').strip()
     groq_key = os.environ.get('GROQ_API_KEY', '').strip()
     key = os.environ.get('OPENAI_API_KEY', '').strip()
     recent = []
     for turn in (history or [])[-6:]:
         if isinstance(turn, dict):
             recent.append((str(turn.get('question', ''))[:300], str(turn.get('answer', ''))[:400]))
+    if gemini_key:
+        messages = [{'role': 'system', 'content': INSTRUCTIONS + '\nVerifierade fakta: ' + json.dumps(facts, ensure_ascii=False)}]
+        for user, assistant in recent:
+            if user and assistant:
+                messages.extend([{'role': 'user', 'content': user}, {'role': 'assistant', 'content': assistant}])
+        messages.append({'role': 'user', 'content': question})
+        payload = {'model': os.environ.get('MATCHORAKEL_GEMINI_MODEL', 'gemini-2.5-flash-lite').strip() or 'gemini-2.5-flash-lite',
+                   'messages': messages, 'max_tokens': 768, 'temperature': 0.4}
+        request = Request('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+                          data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
+                          headers={'Authorization': 'Bearer ' + gemini_key,
+                                   'Content-Type': 'application/json'}, method='POST')
+        try:
+            with urlopen(request, timeout=35) as response:
+                result = json.load(response)
+            choices = result.get('choices') if isinstance(result, dict) else None
+            choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+            message = choice.get('message')
+            content = message.get('content') if isinstance(message, dict) else None
+            if not isinstance(content, str) or not content.strip():
+                logger.warning('Gemini gav ett tomt eller ogiltigt svar.')
+                gemini_health = 'failed'
+                gemini_last_error_code = None
+                return None
+            gemini_health = 'ok'
+            gemini_last_error_code = None
+            return clean_ai_answer(content)
+        except HTTPError as error:
+            logger.warning('Gemini svarade med HTTP %s.', error.code)
+            gemini_health = 'failed'
+            gemini_last_error_code = error.code
+            return None
+        except (URLError, TimeoutError, ValueError, OSError, AttributeError, IndexError) as error:
+            logger.warning('Gemini-anrop misslyckades: %s.', type(error).__name__)
+            gemini_health = 'failed'
+            gemini_last_error_code = None
+            return None
     if groq_key:
         messages = [{'role': 'system', 'content': INSTRUCTIONS + '\nVerifierade fakta: ' + json.dumps(facts, ensure_ascii=False)}]
         for user, assistant in recent:

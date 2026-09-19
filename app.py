@@ -604,7 +604,17 @@ def answer_single(message, context=None, history=None):
                        for names in CUP_ALIASES.values())
     explicit_domestic = any(term in plain for term in ('premier league', 'la liga', 'bundesliga', 'serie a', 'ligue 1'))
     changing_league = explicit_domestic and ('nu' in plain or 'menade' in plain or 'istallet' in plain)
+    football_concept = any(term in plain for term in (
+        'offside', 'falsk nia', 'pressmonster', 'pressing', 'bollinnehav',
+        'xg', 'expected goals', 'frispark', 'straffspark', 'formation', 'uppstallning'))
     if not any(mentioned_teams) and not explicit_cup and not football_followup(message):
+        if football_concept:
+            explanation = general_answer(message, {'fotbollsbegrepp': 'Ingen aktuell match eller verifierad matchstatistik.'}, history)
+            if explanation:
+                result = text_response(explanation)
+                result['source'] = 'Språkmodell'
+                return result
+            return text_response('Jag kunde inte ansluta till AI:n just nu. Försök igen om en stund.')
         result = text_response('Jag hjälper till med fotboll. Fråga om en match eller ett lag.')
         result['topic_reset'] = True
         return result
