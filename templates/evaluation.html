@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Modellresultat — Matchorakel</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="report-body">
+  <main class="report-page">
+    <a class="report-back" href="/">← Tillbaka till chatten</a>
+    <span class="welcome-badge">METOD & RESULTAT</span>
+    <h1>Hur bra är modellerna?</h1>
+    <p class="report-intro">Premier League och La Liga tränas separat. För varje liga används de första 60 % av matchdagarna för träning, nästa 20 % för modellval och sista 20 % för utvärdering. Matcher från samma dag hålls ihop.</p>
+    {% if not reports %}<div class="report-card"><p>Inga nya resultat finns ännu. Kör <code>py train_model.py</code> och ladda om sidan.</p></div>{% endif %}
+    {% for report in reports %}
+    <section class="report-card">
+      <div class="report-heading"><span>{{ report.league }}</span><span>{{ report.source_matches }} källmatcher</span></div>
+      <h2>{{ report.selected_model }}</h2>
+      <p>Modellen valdes utifrån lägst log loss under valideringen. Testet nedan ligger senare i tiden: {{ report.periods.test.first }}–{{ report.periods.test.last }} ({{ report.periods.test.matches }} matcher).</p>
+      <div class="report-table-wrap"><table><thead><tr><th>Modell</th><th>Rätt svar</th><th>Log loss</th><th>Brier</th></tr></thead><tbody>
+        {% for name, metrics in report.test.items() %}<tr><td>{{ name }}</td><td>{{ '%.1f'|format(metrics.accuracy * 100) }} %</td><td>{{ '%.3f'|format(metrics.log_loss) }}</td><td>{{ '%.3f'|format(metrics.brier) }}</td></tr>{% endfor %}
+      </tbody></table></div>
+      <p class="report-caption">Träning: {{ report.periods.train.first }}–{{ report.periods.train.last }} ({{ report.periods.train.matches }} matcher). Validering: {{ report.periods.validation.first }}–{{ report.periods.validation.last }} ({{ report.periods.validation.matches }} matcher).</p>
+      {% if report.odds_benchmark %}
+      <h3>Jämförelse med genomsnittliga odds</h3>
+      <p>På de {{ report.odds_benchmark.matches }} testmatcher som har alla tre marknadsoddsen: marknaden {{ '%.1f'|format(report.odds_benchmark.market.accuracy * 100) }} % rätt och log loss {{ '%.3f'|format(report.odds_benchmark.market.log_loss) }}; vår modell på <strong>samma matcher</strong> {{ '%.1f'|format(report.odds_benchmark.selected_model_same_matches.accuracy * 100) }} % rätt och log loss {{ '%.3f'|format(report.odds_benchmark.selected_model_same_matches.log_loss) }}. Oddsen omvandlas till sannolikheter och normaliseras för att ta bort marginalen.</p>
+      {% endif %}
+    </section>
+    {% endfor %}
+    <section class="report-card report-explain"><h2>Så läser du siffrorna</h2><p><strong>Rätt svar</strong> anger andelen matcher där modellen valde rätt av hemmavinst, oavgjort och bortavinst. <strong>Log loss</strong> och <strong>Brier</strong> granskar sannolikheterna; lägre värden är bättre. Klassfrekvens ger samma sannolikhet för alla matcher utifrån hur vanliga utfallen var i utvecklingsperioden. Lika sannolikhet använder 33,3 % för varje utfall.</p><p>Resultaten gäller historiska matcher. Tidigare utvecklingsarbete har redan tittat på delar av samma material, så denna omkörning är inte ett helt nytt blindat experiment. För en sådan kontroll krävs matcher som ännu inte använts under utvecklingen.</p></section>
+  </main>
+</body>
+</html>
