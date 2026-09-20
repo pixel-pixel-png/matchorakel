@@ -134,19 +134,22 @@ def route_question(message,context,history,web):
     ctx,hits,explicit=resolve(message,context,web)
     # No network requests are needed for conversational acknowledgement.
     if re.fullmatch(r'(hej|hejsan|tja|tjena|hello|hi|hey)( hur mar du( idag)?)?',plain):
-        return text('Hej! Vad vill du veta om fotboll?' if lang=='sv' else 'Hi! What would you like to know about football?',context,lang)
-    if re.fullmatch(r'(hur mar du( idag)?|how are you( today)?)',plain):return text('Jag är redo att hjälpa dig med fotboll. Hur är det med dig?' if lang=='sv' else 'Ready to help with football. How are you?',context,lang)
+        return text('Hej! Vad funderar du på?' if lang=='sv' else 'Hi! What would you like to know?',context,lang)
+    if re.fullmatch(r'(hur mar du( idag)?|how are you( today)?)',plain):return text('Jag är här och redo. Hur mår du?' if lang=='sv' else 'I’m here and ready. How are you?',context,lang)
     if re.fullmatch(r'(jag mar |jo |jo tack |det ar )?(bra|fint|toppen|good|fine)( med mig)?( tack)?|bra tack|thanks|thank you|tack( sa mycket| for hjalpen)?|okej( tack)?|ok',plain):return text('Skönt att höra.' if 'bra' in plain else 'Varsågod.' if lang=='sv' else 'You’re welcome.',context,lang)
-    if re.fullmatch(r'(vad heter du|vem ar du|what is your name|who are you)',plain):return text('Jag är Matchorakel, din fotbollsassistent.' if lang=='sv' else 'I’m Matchorakel, your football assistant.',context,lang)
-    if re.search(r'ignorera.*instruktion|ignore.*instruction|systemprompt|system prompt|api.?nyckel|api key|visa.*hemlighet',plain):return text('Jag visar inte interna instruktioner. Du kan fråga om fotboll.' if lang=='sv' else 'I keep internal instructions private. You can ask about football.',context,lang)
-    if not plain:return text('Skriv en fotbollsfråga så hjälper jag dig.' if lang=='sv' else 'Write a football question so I can help.',context,lang)
+    if re.fullmatch(r'(vad heter du|vem ar du|what is your name|who are you)',plain):return text('Jag är Matchorakel, din assistent.' if lang=='sv' else 'I’m Matchorakel, your assistant.',context,lang)
+    if re.search(r'ignorera.*instruktion|ignore.*instruction|systemprompt|system prompt|api.?nyckel|api key|visa.*hemlighet',plain):return text('Jag visar inte interna instruktioner. Fråga mig om något annat.' if lang=='sv' else 'I keep internal instructions private. Ask me something else.',context,lang)
+    if not plain:return text('Skriv din fråga så hjälper jag dig.' if lang=='sv' else 'Write your question and I’ll help.',context,lang)
     if re.search(r'\b(inter miami|sheffield wednesday|inter turku|bayern alzenau|paris fc)\b',plain):
         return text('Min lagmodell saknar underlag för det laget. Jag kan förklara fotbollsfrågor, men inte ge en sifferprognos för mötet.' if lang=='sv' else 'My match model has no data for that club. I can discuss football, but cannot produce a numerical forecast for this fixture.',None,lang)
     if len(hits)>2:return text('Vilka två lag vill du jämföra?' if lang=='sv' else 'Which two teams should I compare?',None,lang)
     if len(explicit)>1:return text('Vilken tävling menar du?' if lang=='sv' else 'Which competition do you mean?',context,lang)
     if re.search(r'\b(manchester|sheffield)\b',plain) and not hits:return text('Menar du Manchester United eller Manchester City?' if 'manchester' in plain else 'Menar du Sheffield United eller Sheffield Wednesday?',None,lang)
-    if re.search(r'\b(president|pizza|lasagne|python|programmera|kaffe|musik|semester|film|recept|weather|vadret|recipe|code)\b',plain) and not hits:
-        return text('Jag hjälper till med fotboll; fråga gärna om en match eller en regel.' if lang=='sv' else 'I help with football; ask about a match or a rule.',None,lang,topic_reset=True)
+    # An explicit new subject must not inherit the last match. Ambiguous short
+    # follow-ups retain the match: "När är avspark?", "Varför?", "Who will score?".
+    other_subject=bool(re.search(r'\b(fifa|uefa|president|valet|election|pizza|lasagne|python|programmera|kaffe|musik|semester|film|recept|weather|vadret|recipe|code|matematik|matte|plus)\b',plain) or re.fullmatch(r'\s*\d+\s*[+*/-]\s*\d+\s*\??\s*',message))
+    if ctx and not hits and not explicit and other_subject:
+        ctx=None
     if re.search(r'\b(menade|istallet for)\b',plain) and context:return None
     if ctx and len(hits)==1 and ctx.get('home') and ctx.get('away') and re.search(r'\b(borta|away|hemma|home)\b',plain):
         target=hits[0][1]
@@ -168,7 +171,7 @@ def route_question(message,context,history,web):
         schedule_query=False
     if schedule_query:
         if ctx:return schedule_answer(message,ctx,hits,web,lang)
-        return text('Vilket lag eller vilken tävling menar du?' if lang=='sv' else 'Which club or competition do you mean?',None,lang)
+        # "När grundades FIFA?" has no team; let Gemini answer the actual question.
     facts=evidence(ctx,hits,web)
     targets=facts['teams']
     if len(hits)==1:targets=[r for r in targets if normalize_team(r['name'],r['league'])==hits[0][1]]
@@ -236,8 +239,8 @@ def route_question(message,context,history,web):
     if re.search(r'\b(andra halvlek|second half|first half|forsta halvlek)\b',plain):return text('Jag har helmatchdata men ingen separat halvleksmodell. Helmatchens målprognos kan inte delas jämnt mellan halvlekarna.' if lang=='sv' else 'I have full-match data but no half-specific model. The full-match goal forecast cannot simply be split in half.',ctx,lang)
     advanced=bool(re.search(r'\b(offside|press|pressmonster|pressing|formation|taktik|tactics|transfers?|tranare|coach|tabell|table|xg|bollinnehav|possession|regler|rules|frispark|falsk nia|counterattack|omstallning)\b',plain))
     if advanced or not ctx:
-        explanation=web.general_answer(message,facts,history)
-        if explanation:return text(explanation,ctx,lang)
+        explanation=web.general_answer(message,{} if not ctx else facts,history,general=not ctx)
+        if explanation:return text(explanation,ctx,lang,topic_reset=not ctx)
         from language_chat import request_error
         reason=request_error.get() or {}
         return {'kind':'error','error':('AI-tjänstens tillfälliga gräns är nådd. Försök igen senare.' if reason.get('code')==429 else 'AI-svaret kunde inte hämtas. Försök igen.') if lang=='sv' else 'The AI answer is unavailable. Please try again.','context':ctx,'language':lang}

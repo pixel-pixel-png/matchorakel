@@ -1,6 +1,6 @@
 # Matchorakel
 
-En mörk fotbollschatt med matchprognoser, statistik, spelscheman och Gemini. Chattar och favoritlag sparas i den egna webbläsaren. Tävlingar och anslutningsstatus finns under **Om Matchorakel**.
+En chatt för fotboll och andra frågor, med matchprognoser, statistik, spelscheman och Gemini. Chattar och favoritlag sparas i den egna webbläsaren. Tävlingar och anslutningsstatus finns under **Om Matchorakel**.
 
 ## Starta på Windows
 
@@ -40,7 +40,7 @@ Behåll den tjänst och nyckel som redan fungerar. Sätt hemligheter direkt i **
 
 | Namn | Användning |
 | --- | --- |
-| `GEMINI_API_KEY` | Din privata Gemini-nyckel; krävs för öppna fotbollsfrågor. |
+| `GEMINI_API_KEY` | Din privata Gemini-nyckel; krävs för öppna frågor, även utanför fotboll. |
 | `MATCHORAKEL_GEMINI_MODEL` | `gemini-3.1-flash-lite` är standard och matchar den tidigare fungerande inställningen. |
 | `FOOTBALL_DATA_TOKEN` | Valfri privat football-data.org-nyckel för spelscheman och lagarenor. |
 | `MATCHORAKEL_PUBLIC` | `1` på Render, `0` eller utelämnad på din egen dator. |
@@ -66,7 +66,7 @@ Vid problem: kopiera loggrader som börjar med `Gemini HTTP` eller `Gemini:` och
 
 ## Så behandlas en fråga
 
-`/chat` validerar input och anropsgränser → `chat_logic.py` matchar lag, tävling, språk och kontext → strukturerade fakta eller matchmodellen ger numeriska svar → Gemini används för öppna förklaringar → `script.js` visar ett komplett svar. `conversation.py` hjälper med delfrågor och en relevant följdfråga.
+`/chat` validerar input och anropsgränser → `chat_logic.py` matchar lag, tävling, språk och kontext → strukturerade fakta eller matchmodellen ger numeriska fotbollssvar → Gemini används för öppna frågor om fotboll och andra ämnen → `script.js` visar ett komplett svar. `conversation.py` hjälper med delfrågor och en relevant följdfråga.
 
 - Gemini får native `systemInstruction` och högst åtta kompletta user/model-par. Aktuella uppgifter skickas separat från användarens påståenden.
 - Låg temperatur, begränsad thinking och outputgräns. Avkapade svar försöks en gång med större tokenbudget. Transienta HTTP-fel får högst ett kort återförsök; längre Retry-After respekteras genom att avstå.
