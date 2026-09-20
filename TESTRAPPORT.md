@@ -60,3 +60,7 @@ Gemini använder systemInstruction, korrekta user/model-roller, begränsad histo
 - Minnesbaserade kvoter kräver en process och nollställs vid omstart. Stopp kan inte återkalla beräkningar leverantören redan utfört.
 
 Ingen känd blockerande regression återstår i de genomförda lokala testerna. Projektet kan inte ärligt betecknas som garanterat felfritt eller fullständigt liveverifierat.
+
+## Visuell uppdatering efter slutkontrollen
+
+Sidopanelen fick enhetliga linjeikoner för ny chatt, matcher, sökning, modellresultat och information. Mobilens toppfält fick en egen knapp för ny chatt. Sidopanelens avstånd, länkar och sökfält justerades; chattens rubrik, meddelanden och skrivfält verifierades mot samma mittlinje. En CSS-regel visade först mobilknappen även på desktop; detta rättades innan leverans. Chromiumkontroller 16 och 17 passerade vid 360, 390, 768, 1024 och 1440 px utan rapporterade JavaScript-fel. Samtliga 48 unittest-metoder passerade efter den visuella ändringen.

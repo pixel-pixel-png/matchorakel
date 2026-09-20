@@ -1,2 +1,13 @@
-# Automatically created by ruff.
-*
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+artifacts/
+data/**/*.csv
+data/*.csv
+data/fixtures.json
+data/*.tmp
+qa/results/live/
