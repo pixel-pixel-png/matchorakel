@@ -2,57 +2,61 @@
 <html lang="sv">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#212121">
-  <title>Matchorakel — matchanalys</title>
+  <meta name="description" content="Fråga Matchorakel om fotboll, matchstatistik och prognoser.">
+  <meta property="og:title" content="Matchorakel">
+  <title>Matchorakel</title>
+  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
+  <link rel="preload" href="{{ url_for('static', filename='fonts/InterVariable.woff2') }}" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
   <div class="app-shell">
-    <div class="mobile-scrim" id="scrim" hidden></div>
-    <aside class="sidebar" id="sidebar" aria-label="Samtal">
+    <button class="mobile-scrim" id="scrim" aria-label="Stäng sidopanel" tabindex="-1" hidden></button>
+    <aside class="sidebar" id="sidebar" aria-label="Chattar">
       <div class="sidebar-top">
-        <a class="brand" href="/" aria-label="Matchorakel, startsida"><span class="brand-icon">M<span class="brand-dot">.</span></span><span>matchorakel</span></a>
-        <button class="icon-button sidebar-close" id="closeSidebar" type="button" aria-label="Stäng meny">×</button>
+        <button class="brand" id="brandHome" type="button">Matchorakel</button>
+        <button class="icon-button sidebar-close" id="closeSidebar" type="button" aria-label="Stäng sidopanel">×</button>
       </div>
-      <button class="new-chat" id="newChat" type="button"><span class="plus-icon" aria-hidden="true">＋</span> Ny analys <span class="new-chat-arrow" aria-hidden="true">↗</span></button>
+      <button class="new-chat" id="newChat" type="button"><span aria-hidden="true">+</span> Ny chatt</button>
       <div class="quick-links">
-        <button id="openMatches" type="button">▣ <span>Matcher och favoritlag</span></button>
-        <button id="openData" type="button">↻ <span>Uppdatera data</span></button>
+        <button id="openMatches" type="button">Matcher och favoritlag</button>
+        <button id="openData" type="button" hidden>Uppdatera data</button>
       </div>
-      <div class="sidebar-section"><span>Senaste analyser</span></div>
-      <label class="sr-only" for="searchConversations">Sök bland chattar</label>
+      <label class="sr-only" for="searchConversations">Sök i chattar</label>
       <input id="searchConversations" class="conversation-search" placeholder="Sök i chattar" autocomplete="off">
-      <nav id="conversations" class="conversations" aria-label="Tidigare analyser"></nav>
+      <nav id="conversations" class="conversations" aria-label="Tidigare chattar"></nav>
       <div class="undo-toast" id="undoToast" role="status" hidden></div>
-      <a class="report-link" href="/evaluation">Se modellernas resultat <span aria-hidden="true">↗</span></a>
-      <div class="sidebar-bottom"><div class="live-dot" aria-hidden="true"></div><div><strong>Fem ligor och cuper</strong><span>Fråga i samma chatt</span></div></div>
+      <a class="report-link" href="/evaluation">Modellresultat</a>
+      <button class="report-link" id="openAbout" type="button">Om Matchorakel</button>
     </aside>
-
-    <div class="workspace">
+    <div class="workspace is-empty">
       <header class="topbar">
-        <div class="topbar-left"><button id="openSidebar" class="icon-button menu-button" type="button" aria-label="Öppna meny" aria-controls="sidebar" aria-expanded="false">☰</button><span class="topbar-title">Matchanalys</span><span class="topbar-divider"></span><span class="topbar-subtitle">Premier League · La Liga · Bundesliga · Serie A · Ligue 1</span></div>
-        <span class="version-label"><span class="version-dot"></span> MATCHORAKEL / V12</span>
+        <button id="openSidebar" class="icon-button" type="button" aria-label="Visa eller dölj sidopanel" aria-controls="sidebar" aria-expanded="true"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg></button>
+        <span class="topbar-title">Matchorakel</span>
       </header>
-
-      <main class="chat-scroller" id="chat" aria-live="polite" aria-relevant="additions">
+      <main class="chat-scroller" id="chat" aria-label="Konversation">
         <div class="chat-content" id="chatContent"></div>
       </main>
-
+      <button id="scrollBottom" class="icon-button scroll-bottom" aria-label="Till senaste meddelandet" hidden>↓</button>
       <div class="composer-area">
+        <p class="welcome-line" id="welcomeLine">Vad vill du veta om fotboll?</p>
         <form id="composer" class="composer">
-          <label class="sr-only" for="message">Skriv till chatten</label>
-          <input id="message" name="message" maxlength="500" autocomplete="off" placeholder="Skriv till Matchorakel ..." required>
-          <button id="sendButton" type="submit" aria-label="Skicka fråga"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <label class="sr-only" for="message">Skriv till Matchorakel</label>
+          <textarea id="message" name="message" rows="1" maxlength="2000" autocomplete="off" placeholder="Fråga Matchorakel" required></textarea>
+          <button id="sendButton" type="submit" aria-label="Skicka fråga" disabled><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         </form>
-        <p class="composer-caption">Prognoser bygger på historik och är inga garantier. <span id="chatCapability">Fråga om fotboll.</span></p>
+        <div id="followups" class="followups" aria-label="Föreslagen följdfråga"></div>
+        <p class="composer-caption">Matchorakel kan göra fel. Prognoser är inga garantier.</p>
       </div>
-      <section class="tool-panel" id="toolPanel" hidden aria-label="Verktyg">
-        <div class="tool-panel-header"><h2 id="panelTitle">Matcher</h2><button id="closePanel" type="button" aria-label="Stäng panel">×</button></div>
+      <dialog class="tool-panel" id="toolPanel" aria-labelledby="panelTitle">
+        <div class="tool-panel-header"><h2 id="panelTitle">Matcher</h2><button id="closePanel" class="icon-button" type="button" aria-label="Stäng">×</button></div>
         <div id="panelBody" class="tool-panel-body"></div>
-      </section>
+      </dialog>
+      <div class="sr-only" id="announcer" role="status" aria-live="polite"></div>
     </div>
   </div>
-  <script src="{{ url_for('static', filename='script.js') }}"></script>
+  <script src="{{ url_for('static', filename='script.js') }}" defer></script>
 </body>
 </html>
