@@ -707,7 +707,17 @@ def answer_single(message, context=None, history=None):
             upcoming_fixtures(ROOT, league, team=found[0]) if len(found) == 1 else [])
         if fixtures:
             return fixture_answer(fixtures, league, home, away)
-        return text_response('Jag hittar inget verifierat kommande datum för den frågan. Kör py update_fixtures.py med en egen football-data.org-nyckel för att hämta spelschema och arenor. Jag hittar inte på dessa uppgifter.', league, home, away)
+        if home and away:
+            reverse = upcoming_fixtures(ROOT, league, away, home)
+            if reverse:
+                return fixture_answer(reverse, league, away, home,
+                                      title='Match med omvänt hemmalag',
+                                      summary=(f'Inget kommande datum finns publicerat för {team_display(home, league)} '
+                                               f'hemma mot {team_display(away, league)}. Matchen nedan spelas '
+                                               f'med {team_display(away, league)} som hemmalag.'))
+            return text_response(f'Jag hittar ingen kommande match med {team_display(home, league)} hemma mot '
+                                 f'{team_display(away, league)} i det publicerade schemat.', league, home, away)
+        return text_response('Jag hittar inget publicerat kommande datum för den frågan.', league, home, away)
     if any(term in normalized for term in ('skadad', 'skadade', 'skada', 'skador', 'avstangd', 'saknas i startelvan', 'vansterback')):
         return text_response('En skadad ytterback kan påverka matchbilden, men jag kan inte verifiera aktuell frånvaro eller översätta den till en procentsats för en spelares mål eller skott. Modellen tar ännu inte in skador, startelvor eller förväntade minuter. Kontrollera bekräftade uppgifter nära avspark.', league, home, away)
     shot_query = any(word in normalized for word in ('skott pa mal', 'shots on target', 'avslut pa mal'))
