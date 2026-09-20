@@ -74,6 +74,7 @@ ALIASES = {
         'bayern': 'bayern munich', 'bayern munchen': 'bayern munich',
         'fc bayern munchen': 'bayern munich', 'fc bayern munich': 'bayern munich',
         'borussia dortmund': 'dortmund', 'bvb': 'dortmund',
+        'sv werder bremen': 'werder bremen', 'werder': 'werder bremen',
         'bayer leverkusen': 'leverkusen', 'rb leipzig': 'leipzig',
         'eintracht frankfurt': 'ein frankfurt', 'frankfurt': 'ein frankfurt',
         'borussia monchengladbach': "m gladbach", 'gladbach': 'm gladbach',

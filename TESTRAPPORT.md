@@ -2,7 +2,7 @@
 
 ## Resultat och testgräns
 
-Tolv numrerade omgångar är genomförda, med 30 nya fall per omgång utöver 199 grundfall. Slutkorpusen innehåller **559 fall**. Omgång 11 och 12 passerade hela den då befintliga korpusen utan nya fel. Dessutom passerade **48 unittest-metoder**, inklusive korpusen som subtester; dessa är inte 48 ytterligare oberoende användarsamtal.
+Tolv numrerade omgångar är genomförda, med 30 nya fall per omgång utöver 199 grundfall. Slutkorpusen innehåller **559 fall**. Omgång 11 och 12 passerade hela den då befintliga korpusen utan nya fel. Dessutom passerade **49 unittest-metoder**, inklusive korpusen som subtester; dessa är inte 48 ytterligare oberoende användarsamtal.
 
 Chromium körs mot riktig lokal Flask, med syntetiska matchfiler/modeller, vid 360, 390, 768, 1024 och 1440 px. Resultat, tidigare misslyckanden, omkörningar och skärmbilder finns i `qa/results`. Testerna omfattar navigation, historik, dialoger, favoriter, tangentbord, IME, stopp, retry, sena svar, chattbyte, flera flikar, modellrapport, 404 och horisontell overflow. Inga JavaScript-undantag rapporterades i de sista körningarna.
 
@@ -63,4 +63,8 @@ Ingen känd blockerande regression återstår i de genomförda lokala testerna. 
 
 ## Visuell uppdatering efter slutkontrollen
 
-Sidopanelen fick enhetliga linjeikoner för ny chatt, matcher, sökning, modellresultat och information. Mobilens toppfält fick en egen knapp för ny chatt. Sidopanelens avstånd, länkar och sökfält justerades; chattens rubrik, meddelanden och skrivfält verifierades mot samma mittlinje. En CSS-regel visade först mobilknappen även på desktop; detta rättades innan leverans. Chromiumkontroller 16 och 17 passerade vid 360, 390, 768, 1024 och 1440 px utan rapporterade JavaScript-fel. Samtliga 48 unittest-metoder passerade efter den visuella ändringen.
+Sidopanelen fick enhetliga linjeikoner för ny chatt, matcher, sökning, modellresultat och information. Mobilens toppfält fick en egen knapp för ny chatt. Sidopanelens avstånd, länkar och sökfält justerades; chattens rubrik, meddelanden och skrivfält verifierades mot samma mittlinje. En CSS-regel visade först mobilknappen även på desktop; detta rättades innan leverans. Chromiumkontroller 16 och 17 passerade vid 360, 390, 768, 1024 och 1440 px utan rapporterade JavaScript-fel. Samtliga 49 unittest-metoder passerade efter den visuella ändringen.
+
+## Namnmatchning i Bundesliga
+
+Importerat spelschema kan kalla klubben `SV Werder Bremen`, medan ligamodellen använder `Werder Bremen`. Enheten kopplas nu till samma lag vid schemafrågor. Regressionstest frågar exakt ”Borussia Dortmund mot SV Werder Bremen i Bundesliga, när spelas matchen?” med kontrollerad framtida match och verifierar hemma- och bortalag. Detta bekräftar namnmatchningen men inte att en viss användares sparade schema innehåller matchen.
