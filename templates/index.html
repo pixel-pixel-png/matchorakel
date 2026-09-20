@@ -17,29 +17,29 @@
     <aside class="sidebar" id="sidebar" aria-label="Chattar">
       <div class="sidebar-top">
         <button class="brand" id="brandHome" type="button">Matchorakel</button>
-        <button class="icon-button sidebar-close" id="closeSidebar" type="button" aria-label="Stäng sidopanel">×</button>
+        <button class="icon-button sidebar-close" id="closeSidebar" type="button" aria-label="Stäng sidopanel"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
       </div>
-      <button class="new-chat" id="newChat" type="button"><span aria-hidden="true">+</span> Ny chatt</button>
+      <button class="new-chat" id="newChat" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-6M14 5.5l4.5-2a1.5 1.5 0 0 1 2 2L18 10l-5 2 1-6.5Z"/></svg><span>Ny chatt</span></button>
       <div class="quick-links">
-        <button id="openMatches" type="button">Matcher och favoritlag</button>
-        <button id="openData" type="button" hidden>Uppdatera data</button>
+        <button id="openMatches" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4M17 3v4M3 10h18M7 14h4M7 17h4"/></svg><span>Matcher och favoritlag</span></button>
+        <button id="openData" type="button" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.5-5.8M20 4v5h-5M12 8v5l3 2"/></svg><span>Uppdatera data</span></button>
       </div>
-      <label class="sr-only" for="searchConversations">Sök i chattar</label>
-      <input id="searchConversations" class="conversation-search" placeholder="Sök i chattar" autocomplete="off">
+      <div class="history-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></svg><label class="sr-only" for="searchConversations">Sök i chattar</label><input id="searchConversations" class="conversation-search" placeholder="Sök i chattar" autocomplete="off"></div>
       <nav id="conversations" class="conversations" aria-label="Tidigare chattar"></nav>
       <div class="undo-toast" id="undoToast" role="status" hidden></div>
-      <a class="report-link" href="/evaluation">Modellresultat</a>
-      <button class="report-link" id="openAbout" type="button">Om Matchorakel</button>
+      <a class="report-link" href="/evaluation"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5M4 19h16M8 15l4-4 3 2 5-6"/></svg><span>Modellresultat</span></a>
+      <button class="report-link" id="openAbout" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 10.5v5.5m0-8v.1"/></svg><span>Om Matchorakel</span></button>
     </aside>
     <div class="workspace is-empty">
       <header class="topbar">
         <button id="openSidebar" class="icon-button" type="button" aria-label="Visa eller dölj sidopanel" aria-controls="sidebar" aria-expanded="true"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg></button>
         <span class="topbar-title">Matchorakel</span>
+        <button id="newChatTop" class="icon-button topbar-new-chat" type="button" aria-label="Ny chatt"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-6M14 5.5l4.5-2a1.5 1.5 0 0 1 2 2L18 10l-5 2 1-6.5Z"/></svg></button>
       </header>
       <main class="chat-scroller" id="chat" aria-label="Konversation">
         <div class="chat-content" id="chatContent"></div>
       </main>
-      <button id="scrollBottom" class="icon-button scroll-bottom" aria-label="Till senaste meddelandet" hidden>↓</button>
+      <button id="scrollBottom" class="icon-button scroll-bottom" aria-label="Till senaste meddelandet" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v15m0 0 6-6m-6 6-6-6"/></svg></button>
       <div class="composer-area">
         <p class="welcome-line" id="welcomeLine">Vad vill du veta om fotboll?</p>
         <form id="composer" class="composer">
@@ -51,7 +51,7 @@
         <p class="composer-caption">Matchorakel kan göra fel. Prognoser är inga garantier.</p>
       </div>
       <dialog class="tool-panel" id="toolPanel" aria-labelledby="panelTitle">
-        <div class="tool-panel-header"><h2 id="panelTitle">Matcher</h2><button id="closePanel" class="icon-button" type="button" aria-label="Stäng">×</button></div>
+        <div class="tool-panel-header"><h2 id="panelTitle">Matcher</h2><button id="closePanel" class="icon-button" type="button" aria-label="Stäng"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
         <div id="panelBody" class="tool-panel-body"></div>
       </dialog>
       <div class="sr-only" id="announcer" role="status" aria-live="polite"></div>
