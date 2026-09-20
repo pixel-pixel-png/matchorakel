@@ -1,667 +1,90 @@
-const form = document.querySelector('#composer');
-const input = document.querySelector('#message');
-const sendButton = document.querySelector('#sendButton');
-const scroller = document.querySelector('#chat');
-const content = document.querySelector('#chatContent');
-const conversationsNode = document.querySelector('#conversations');
-const undoToast = document.querySelector('#undoToast');
-const sidebar = document.querySelector('#sidebar');
-const appShell = document.querySelector('.app-shell');
-const scrim = document.querySelector('#scrim');
-const openSidebarButton = document.querySelector('#openSidebar');
-const panel = document.querySelector('#toolPanel');
-const panelTitle = document.querySelector('#panelTitle');
-const panelBody = document.querySelector('#panelBody');
-const searchConversations = document.querySelector('#searchConversations');
-const chatCapability = document.querySelector('#chatCapability');
-const STORAGE_KEY = 'matchorakel-conversations-v1';
-const FAVORITES_KEY = 'matchorakel-favorites-v1';
-const LEAGUE_NAMES = {PL: 'Premier League', LL: 'La Liga', BL: 'Bundesliga', SA: 'Serie A', L1: 'Ligue 1',
-  UCL: 'Champions League', FAC: 'FA Cup', CDR: 'Copa del Rey', EL: 'Europa League',
-  UECL: 'Conference League', DFB: 'DFB-Pokal', CIT: 'Coppa Italia'};
-
-function element(tag, className, text) {
-  const node = document.createElement(tag);
-  if (className) node.className = className;
-  if (text !== undefined) node.textContent = text;
-  return node;
+'use strict';
+const $ = selector => document.querySelector(selector);
+const form=$('#composer'), input=$('#message'), sendButton=$('#sendButton'), scroller=$('#chat'), content=$('#chatContent');
+const sidebar=$('#sidebar'), shell=$('.app-shell'), workspace=$('.workspace'), panel=$('#toolPanel'), panelBody=$('#panelBody');
+const STORAGE_KEY='matchorakel-conversations-v1', FAVORITES_KEY='matchorakel-favorites-v1';
+const LEAGUE_NAMES={PL:'Premier League',LL:'La Liga',BL:'Bundesliga',SA:'Serie A',L1:'Ligue 1',UCL:'Champions League',FAC:'FA Cup',CDR:'Copa del Rey',EL:'Europa League',UECL:'Conference League',DFB:'DFB-Pokal',CIT:'Coppa Italia'};
+const arrow='<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const reduced=matchMedia('(prefers-reduced-motion: reduce)');
+const uid=()=>crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36)+Math.random().toString(36).slice(2);
+function element(tag,cls='',text){const el=document.createElement(tag);el.className=cls;if(typeof text==='string'||typeof text==='number')el.textContent=String(text);return el;}
+function button(text,cls,handler){const b=element('button',cls,text);b.type='button';b.addEventListener('click',handler);return b;}
+function announce(text){$('#announcer').textContent=text;}
+function readJSON(key,fallback){try{return JSON.parse(localStorage.getItem(key))??fallback;}catch{return fallback;}}
+function writeJSON(key,value){try{localStorage.setItem(key,JSON.stringify(value));return true;}catch{announce('Lagringen är full eller avstängd. Chatten sparas bara i den här fliken.');return false;}}
+function oldAnswer(turn){return turn.answer||turn.data&&{...turn.data,kind:'prediction'}||turn.insight&&{...turn.insight,kind:'insight'}||turn.fixtures&&{...turn.fixtures,kind:'fixtures'}||turn.combined&&{...turn.combined,kind:'combined'}||turn.text&&{kind:'text',response:turn.text,context:turn.context,topic_reset:turn.topicReset}||null;}
+function readConversations(){const raw=readJSON(STORAGE_KEY,[]);return Array.isArray(raw)?raw.filter(c=>c&&typeof c.id==='string'&&typeof c.title==='string'&&Array.isArray(c.messages)).slice(0,30).map(c=>({...c,messages:c.messages.filter(t=>t&&typeof t.question==='string').slice(-100).map(t=>({...t,id:t.id||uid(),answer:oldAnswer(t),error:t.error||(!oldAnswer(t)?'Svaret blev avbrutet.':null)}))})):[];}
+let conversations=readConversations(),activeId=history.state?.chatId||conversations[0]?.id||null,pending=null,panelRequest=null,undoTimer;
+let favorites=readJSON(FAVORITES_KEY,[]);if(!Array.isArray(favorites))favorites=[];favorites=favorites.filter(x=>typeof x==='string');
+const favoriteKey=name=>String(name).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/\b(fc|cf)\b/g,'').replace(/[^a-z0-9]+/g,' ').trim();
+const current=()=>conversations.find(c=>c.id===activeId);
+function save(){writeJSON(STORAGE_KEY,conversations.slice(0,30).map(c=>({...c,messages:c.messages.slice(-100)})));}
+function nearBottom(){return scroller.scrollHeight-scroller.clientHeight-scroller.scrollTop<80;}
+function scrollBottom(smooth=false){scroller.scrollTo({top:scroller.scrollHeight,behavior:smooth&&!reduced.matches?'smooth':'instant'});$('#scrollBottom').hidden=true;}
+scroller.addEventListener('scroll',()=>{$('#scrollBottom').hidden=nearBottom()||!current()?.messages.length;},{passive:true});
+$('#scrollBottom').addEventListener('click',()=>scrollBottom(true));
+function syncInput(){input.style.height='44px';input.style.height=Math.min(200,Math.max(44,input.scrollHeight))+'px';input.style.overflowY=input.scrollHeight>200?'auto':'hidden';sendButton.disabled=!pending&&!input.value.trim();sendButton.type=pending?'button':'submit';sendButton.setAttribute('aria-label',pending?'Stoppa svar':'Skicka fråga');sendButton.innerHTML=pending?'<span class="stop-square" aria-hidden="true"></span>':arrow;}
+input.addEventListener('input',syncInput);
+input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&e.keyCode!==229){e.preventDefault();if(!pending)form.requestSubmit();}});
+sendButton.addEventListener('click',()=>{if(pending)stopRequest();});
+function setSidebar(open){const mobile=matchMedia('(max-width:720px)').matches;if(mobile){sidebar.classList.toggle('open',open);$('#scrim').hidden=!open;sidebar.inert=!open;}else{shell.classList.toggle('sidebar-collapsed',!open);sidebar.inert=!open;$('#scrim').hidden=true;}$('#openSidebar').setAttribute('aria-expanded',String(open));}
+$('#openSidebar').addEventListener('click',()=>setSidebar($('#openSidebar').getAttribute('aria-expanded')!=='true'));
+$('#closeSidebar').addEventListener('click',()=>{setSidebar(false);$('#openSidebar').focus();});$('#scrim').addEventListener('click',()=>setSidebar(false));
+function closeMobile(){if(matchMedia('(max-width:720px)').matches)setSidebar(false);}
+function switchChat(id,record=true){stopRequest(false);activeId=conversations.some(c=>c.id===id)?id:null;if(record)history.pushState({chatId:activeId},'');render();closeMobile();input.focus();}
+function newChat(){switchChat(null);input.value='';syncInput();}
+$('#newChat').addEventListener('click',newChat);$('#brandHome').addEventListener('click',newChat);
+window.addEventListener('popstate',e=>switchChat(e.state?.chatId||null,false));
+function historyGroup(chat){const stamp=new Date(chat.updatedAt||chat.createdAt||Number(chat.id.split('-')[0])||0);const today=new Date();today.setHours(0,0,0,0);const yesterday=new Date(today);yesterday.setDate(today.getDate()-1);return stamp>=today?'Idag':stamp>=yesterday?'Igår':'Tidigare';}
+function deleteChat(chat){if(pending?.chatId===chat.id)stopRequest(false);conversations=conversations.filter(c=>c.id!==chat.id);if(activeId===chat.id)activeId=conversations[0]?.id||null;save();render();const toast=$('#undoToast');toast.hidden=false;toast.replaceChildren(element('span','','Chatten raderades.'),button('Ångra','',()=>{if(!conversations.some(c=>c.id===chat.id))conversations.unshift(chat);activeId=chat.id;save();render();toast.hidden=true;clearTimeout(undoTimer);}));clearTimeout(undoTimer);undoTimer=setTimeout(()=>toast.hidden=true,8000);}
+function renderSidebar(){const nav=$('#conversations');nav.replaceChildren();const query=$('#searchConversations').value.trim().toLocaleLowerCase('sv');const filtered=conversations.filter(c=>(c.title+' '+c.messages.map(t=>t.question).join(' ')).toLocaleLowerCase('sv').includes(query));for(const group of ['Idag','Igår','Tidigare']){const chats=filtered.filter(c=>historyGroup(c)===group);if(!chats.length)continue;nav.append(element('h2','history-group',group));for(const chat of chats){const row=element('div','conversation-row'+(chat.id===activeId?' active':''));const title=button(chat.title,'conversation',()=>switchChat(chat.id));if(chat.id===activeId)title.setAttribute('aria-current','page');const more=button('…','conversation-more',()=>{const old=row.querySelector('.conversation-menu');document.querySelectorAll('.conversation-menu').forEach(n=>n.remove());if(old)return;const menu=element('div','conversation-menu');menu.append(button('Ta bort','',()=>deleteChat(chat)));row.append(menu);menu.querySelector('button').focus();});more.setAttribute('aria-label','Alternativ för '+chat.title);row.append(title,more);nav.append(row);}}
+if(query&&!filtered.length)nav.append(element('p','empty-history','Ingen chatt matchar sökningen.'));}
+$('#searchConversations').addEventListener('input',renderSidebar);
+document.addEventListener('click',e=>{if(!e.target.closest('.conversation-row'))document.querySelectorAll('.conversation-menu').forEach(n=>n.remove());});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){if(panel.open)return;document.querySelectorAll('.conversation-menu').forEach(n=>n.remove());if(sidebar.classList.contains('open')){setSidebar(false);$('#openSidebar').focus();}}if(e.key==='Tab'&&sidebar.classList.contains('open')&&!panel.open){const items=[...sidebar.querySelectorAll('button,a,input')].filter(n=>!n.hidden&&n.offsetParent!==null);const first=items[0],last=items.at(-1);if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}}});
+function fixtureDate(f,language="sv"){const d=new Date(f.utc_date);if(Number.isNaN(d.getTime()))return 'Datum saknas';const confirmed=f.kickoff_confirmed??['TIMED','IN_PLAY','PAUSED','FINISHED'].includes(f.status);return new Intl.DateTimeFormat(language==='en'?'en-GB':'sv-SE',{timeZone:confirmed?'Europe/Stockholm':'UTC',day:'numeric',month:'long',year:'numeric',...(confirmed?{hour:'2-digit',minute:'2-digit'}:{})}).format(d)+(confirmed?(language==='en'?' · Stockholm time':' · svensk tid'):(language==='en'?' · kickoff time unconfirmed':' · avspark inte fastställd'));}
+function venueText(f,language="sv"){return typeof f.venue==='string'&&f.venue.trim()?(f.venue_confidence==='likely_home'?(language==='en'?'Likely home venue: ':'Trolig hemmaarena: '):'')+f.venue:(language==='en'?'Venue unavailable from source':'Arena saknas i källan');}
+function renderFixture(f,language="sv"){const box=element('div','fixture-card');box.append(element('div','fixture-pair',`${f.home} – ${f.away}`),element('div','fixture-date',fixtureDate(f,language)),element('div','fixture-venue',venueText(f,language)));if(f.status==='FINISHED'&&Number.isInteger(f.score?.home)&&Number.isInteger(f.score?.away))box.append(element('div','',`Resultat: ${f.score.home}–${f.score.away}`));if(typeof f.source==='string'){const note=element('div','fixture-source',f.source+(typeof f.synced_at==='string'&&Number.isFinite(Date.parse(f.synced_at))?' · hämtat '+f.synced_at.slice(0,10):''));box.append(note);}return box;}
+function answerText(a){if(!a)return '';if(a.response)return a.response;if(a.kind==='combined')return(a.parts||[]).map(answerText).join('\n');if(a.kind==='prediction'&&a.scoreline)return `Prediction: ${a.home} ${a.scoreline.home}–${a.scoreline.away} ${a.away}. Hemmaseger ${a.probabilities?.H} %, oavgjort ${a.probabilities?.D} %, bortaseger ${a.probabilities?.A} %.`;if(a.kind==='fixtures')return (a.summary||'')+'\n'+(a.fixtures||[]).map(f=>`${f.home} – ${f.away}: ${fixtureDate(f)}. ${venueText(f)}.`).join('\n');if(a.kind==='insight')return [a.title,a.summary,...(a.cards||[]).map(c=>`${c.label}: ${c.value}. ${c.detail||''}`)].filter(Boolean).join('\n');return '';}
+function validAnswer(a,depth=0){if(!a||typeof a!=='object'||depth>3)return false;if(a.kind==='error')return typeof a.error==='string';if(a.kind==='text')return typeof a.response==='string'&&a.response.trim().length>0;if(a.kind==='prediction'){const p=a.probabilities;return p&&['H','D','A'].every(k=>typeof p[k]==='number'&&Number.isFinite(p[k])&&p[k]>=0&&p[k]<=100)&&Math.abs(p.H+p.D+p.A-100)<1&&['home','away'].every(k=>typeof a[k]==='string'&&Number.isInteger(a.scoreline?.[k])&&a.scoreline[k]>=0&&a.scoreline[k]<=10);}if(a.kind==='fixtures')return Array.isArray(a.fixtures)&&a.fixtures.length>0&&a.fixtures.every(f=>f&&typeof f.home==='string'&&typeof f.away==='string'&&Number.isFinite(Date.parse(f.utc_date)));if(a.kind==='insight')return typeof a.title==='string'&&Array.isArray(a.cards)&&a.cards.every(c=>c&&typeof c.label==='string'&&['string','number'].includes(typeof c.value));if(a.kind==='combined')return Array.isArray(a.parts)&&a.parts.length>0&&a.parts.every(p=>validAnswer(p,depth+1));return false;}
+function renderAnswer(a,container){if(!validAnswer(a)){container.append(element('p','error-response','Svaret kunde inte läsas.'));return;}if(a.kind==='combined'){a.parts.forEach((part,i)=>{const block=element('div',i?'combined-part':'');renderAnswer(part,block);container.append(block);});return;}
+if(a.response)container.append(element('p',a.kind==='prediction'?'prediction-line':'answer-text',a.response));
+if(a.kind==='prediction'){if(!a.response)container.append(element('p','prediction-line',answerText(a)));const row=element('div','outcomes');const p=a.probabilities,best=Math.max(p.H,p.D,p.A);for(const[key,label]of[['H',a.home],['D',a.language==='en'?'Draw':'Oavgjort'],['A',a.away]]){const block=element('div','outcome'+(p[key]===best?' best':''));block.append(element('div','outcome-label',label),element('div','outcome-number',`${p[key].toLocaleString(a.language==='en'?'en':'sv-SE')} %`));const track=element('div','outcome-track'),fill=element('div','outcome-fill');fill.style.width=p[key]+'%';track.append(fill);block.append(track);row.append(block);}container.append(row);if(a.explanation)container.append(element('p','answer-text',a.explanation));const details=element('details','details-toggle');details.append(element('summary','',a.language==='en'?'Data and method':'Underlag och metod'));details.append(element('p','',`${a.model||'Målmodell'} · ${a.as_of||''}`),element('p','',a.scoreline.source||''));if(a.fixture)details.append(renderFixture(a.fixture,a.language));container.append(details);if(a.fixture)resultCheck(a,container);}
+else if(a.kind==='fixtures'){if(a.summary&&!a.response)container.append(element('p','answer-text',a.summary));for(const f of a.fixtures)container.append(renderFixture(f,a.language));}
+else if(a.kind==='insight'&&!a.response){container.append(element('h2','result-title',a.title));if(a.summary)container.append(element('p','answer-text',a.summary));for(const c of a.cards){const box=element('div','insight-card');box.append(element('span','insight-label',c.label),element('span','insight-value',c.value));if(c.detail)box.append(element('div','insight-detail',c.detail));container.append(box);}}
 }
-
-function readConversations() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
-    return Array.isArray(saved) ? saved.filter(item => item && typeof item.id === 'string' &&
-      typeof item.title === 'string' && Array.isArray(item.messages)).slice(0, 30).map(item => ({
-        ...item, messages: item.messages.filter(turn => turn && typeof turn.question === 'string').slice(-100)
-      })) : [];
-  } catch {
-    return [];
-  }
-}
-
-let conversations = readConversations();
-let activeId = conversations[0]?.id || null;
-let busy = false;
-let pendingChat = null;
-let undoTimer;
-let matchesFilter = 'all';
-let matchesVisible = 8;
-let panelRequestId = 0;
-let favorites = [];
-try { favorites = JSON.parse(localStorage.getItem(FAVORITES_KEY) || '[]'); } catch { favorites = []; }
-if (!Array.isArray(favorites)) favorites = [];
-const favoriteKey = name => String(name || '').toLowerCase().replace(/\b(fc|cf)\b/g, '').replace(/[^a-zåäö0-9]/g, ' ').trim();
-
-function toggleFavorite(name) {
-  const key = favoriteKey(name);
-  favorites = favorites.includes(key) ? favorites.filter(item => item !== key) : [...favorites, key];
-  try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(favorites)); } catch { /* Lokal lagring är valfri. */ }
-}
-
-function closePanel() { panel.hidden = true; panelRequestId++; }
-document.querySelector('#closePanel').addEventListener('click', closePanel);
-
-async function showMatches() {
-  const requestId = ++panelRequestId;
-  panel.hidden = false;
-  panelTitle.textContent = 'Matcher och favoritlag';
-  panelBody.replaceChildren(element('p', 'panel-muted', 'Hämtar publicerade matcher ...'));
-  try {
-    const response = await fetch('/api/fixtures');
-    if (!response.ok) throw new Error('Kunde inte läsa schemat.');
-    const fixtures = await response.json();
-    if (requestId !== panelRequestId) return;
-    if (!Array.isArray(fixtures)) throw new Error('Schemat hade ett oväntat format. Försök senare.');
-    const usableFixtures = fixtures.filter(item => item && typeof item === 'object' &&
-      typeof item.home === 'string' && typeof item.away === 'string' && typeof item.league === 'string');
-    panelBody.replaceChildren();
-    const filters = element('div', 'match-filters');
-    for (const [code, label] of [['all', 'Alla'], ['favorites', 'Favoriter'], ['PL', 'Premier League'],
-      ['LL', 'La Liga'], ['BL', 'Bundesliga'], ['SA', 'Serie A'], ['L1', 'Ligue 1'],
-      ['UCL', 'Champions League'], ['FAC', 'FA Cup'], ['CDR', 'Copa del Rey'],
-      ['EL', 'Europa League'], ['UECL', 'Conference League'],
-      ['DFB', 'DFB-Pokal'], ['CIT', 'Coppa Italia']]) {
-      const button = element('button', `match-filter${matchesFilter === code ? ' active' : ''}`, label);
-      button.type = 'button';
-      button.addEventListener('click', () => { matchesFilter = code; matchesVisible = 8; drawMatches(); });
-      filters.append(button);
-    }
-    panelBody.append(filters);
-    const list = element('div', 'match-list');
-    panelBody.append(list);
-    function drawMatches() {
-      for (const button of filters.children) button.classList.toggle('active',
-        button.textContent === ({all:'Alla', favorites:'Favoriter', ...LEAGUE_NAMES})[matchesFilter]);
-      list.replaceChildren();
-      const games = usableFixtures.filter(item => matchesFilter === 'all' ||
-        (matchesFilter === 'favorites' ? [item.home, item.away].some(team => favorites.includes(favoriteKey(team))) : item.league === matchesFilter));
-      list.append(element('p', 'panel-muted', `${games.length} kommande matcher · visa ${Math.min(matchesVisible, games.length)}`));
-      if (!games.length) list.append(element('p', 'panel-muted', usableFixtures.length
-        ? 'Inga matcher i detta filter. Prova Alla eller en annan liga.'
-        : 'Inga framtida matcher har hämtats till servern. Sidans administratör behöver uppdatera spelschemat.'));
-      for (const game of games.slice(0, matchesVisible)) {
-        const row = element('div', 'match-row');
-        const date = game.utc_date ? new Date(game.utc_date) : null;
-        const when = date && !Number.isNaN(date.getTime())
-          ? new Intl.DateTimeFormat('sv-SE', {day:'numeric', month:'short', hour:'2-digit', minute:'2-digit', timeZone:'Europe/Stockholm'}).format(date) : 'Datum saknas';
-        row.append(element('span', 'match-row-date', `${when} · ${LEAGUE_NAMES[game.league] || 'Okänd tävling'}`));
-        row.append(element('strong', 'match-row-teams', `${game.home} – ${game.away}`));
-        row.append(element('span', 'match-row-venue', game.venue ?
-          `${game.venue_confidence === 'confirmed' ? 'Arena' : 'Trolig hemmaarena'}: ${game.venue}` :
-          'Spelplats saknas i källan'));
-        const actions = element('div', 'match-row-actions');
-        for (const team of [game.home, game.away]) {
-          const star = element('button', 'favorite-button', `${favorites.includes(favoriteKey(team)) ? '★' : '☆'} ${team}`);
-          star.type = 'button';
-          star.setAttribute('aria-label', `${favorites.includes(favoriteKey(team)) ? 'Ta bort' : 'Lägg till'} ${team} som favorit`);
-          star.addEventListener('click', () => { toggleFavorite(team); drawMatches(); });
-          actions.append(star);
-        }
-        const ask = element('button', 'panel-ask', 'Fråga ↗');
-        ask.type = 'button';
-        ask.addEventListener('click', () => {
-          closePanel(); closeMenu();
-          input.value = `${game.home} mot ${game.away}, när spelas matchen?`;
-          form.requestSubmit();
-        });
-        actions.append(ask);
-        row.append(actions);
-        list.append(row);
-      }
-      if (games.length > matchesVisible) {
-        const more = element('button', 'panel-action', 'Visa 8 till');
-        more.type = 'button';
-        more.addEventListener('click', () => { matchesVisible += 8; drawMatches(); });
-        list.append(more);
-      }
-    }
-    drawMatches();
-  } catch (error) { if (requestId === panelRequestId) {
-    const retry = element('button', 'panel-action', 'Försök igen');
-    retry.type = 'button'; retry.addEventListener('click', showMatches);
-    panelBody.replaceChildren(element('p', 'panel-muted', error.message), retry);
-  } }
-}
-
-async function showDataStatus() {
-  const requestId = ++panelRequestId;
-  panel.hidden = false;
-  panelTitle.textContent = 'Uppdatera data';
-  panelBody.replaceChildren(element('p', 'panel-muted', 'Hämtar status ...'));
-  try {
-    const response = await fetch('/api/data/status');
-    if (!response.ok) throw new Error('Kunde inte hämta datastatus. Försök igen.');
-    const data = await response.json();
-    if (requestId !== panelRequestId) return;
-    panelBody.replaceChildren(element('p', 'panel-muted', `${data.fixtures} matcher i schemat. Dina sparade data och modeller raderas inte vid en uppdatering.`));
-    for (const league of Object.values(data.leagues)) {
-      panelBody.append(element('p', 'panel-data-row', `${league.name}: ${league.files} säsongsfiler · modell ${league.trained ? 'klar' : 'saknas'}`));
-    }
-    const key = element('input', 'panel-input');
-    key.type = 'password'; key.autocomplete = 'off'; key.placeholder = 'football-data.org-nyckel för spelschemat';
-    key.setAttribute('aria-label', 'football-data.org-nyckel');
-    panelBody.append(key);
-    const fixtureButton = element('button', 'panel-action', 'Uppdatera spelschema och arenor');
-    const resultsButton = element('button', 'panel-action', 'Uppdatera resultat och träna modeller');
-    const status = element('p', 'panel-muted', data.job.message);
-    for (const button of [fixtureButton, resultsButton]) button.disabled = data.job.running;
-    async function start(kind) {
-      const token = key.value;
-      key.value = '';
-      const result = await fetch('/api/data/update', {method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({kind, token})});
-      const payload = await result.json();
-      if (!result.ok) { status.textContent = payload.error || 'Uppdateringen kunde inte starta.'; return; }
-      fixtureButton.disabled = resultsButton.disabled = true;
-      status.textContent = 'Uppdateringen har startat. Den fortsätter medan du använder chatten.';
-      setTimeout(() => { if (!panel.hidden && panelTitle.textContent === 'Uppdatera data') showDataStatus(); }, 5000);
-    }
-    fixtureButton.addEventListener('click', () => start('fixtures').catch(error => { status.textContent = error.message; }));
-    resultsButton.addEventListener('click', () => start('results').catch(error => { status.textContent = error.message; }));
-    panelBody.append(fixtureButton, resultsButton, status);
-    for (const entry of data.job.log.slice(-8)) panelBody.append(element('p', 'panel-log', entry));
-    if (data.job.running) setTimeout(() => { if (!panel.hidden && panelTitle.textContent === 'Uppdatera data') showDataStatus(); }, 6000);
-  } catch (error) { if (requestId === panelRequestId) {
-    const retry = element('button', 'panel-action', 'Försök igen');
-    retry.type = 'button'; retry.addEventListener('click', showDataStatus);
-    panelBody.replaceChildren(element('p', 'panel-muted', error.message), retry);
-  } }
-}
-
-document.querySelector('#openMatches').addEventListener('click', () => { closeMenu(); showMatches(); });
-document.querySelector('#openData').addEventListener('click', () => { closeMenu(); showDataStatus(); });
-function saveConversations() {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(conversations.slice(0, 30)));
-  } catch {
-    // Webbplatsen fungerar även om webbläsaren blockerar lokal lagring.
-  }
-}
-
-function activeConversation() {
-  return conversations.find(item => item.id === activeId);
-}
-
-function scrollToBottom() {
-  requestAnimationFrame(() => scroller.scrollTo({top: scroller.scrollHeight, behavior: 'smooth'}));
-}
-
-function closeMenu() {
-  sidebar.classList.remove('open');
-  scrim.hidden = true;
-  openSidebarButton.setAttribute('aria-expanded', String(!appShell.classList.contains('sidebar-collapsed') &&
-    Boolean(window.matchMedia?.('(min-width: 721px)').matches)));
-}
-
-function renderSidebar() {
-  conversationsNode.replaceChildren();
-  if (!conversations.length) {
-    conversationsNode.append(element('p', 'empty-history', 'Dina analyser visas här när du har ställt din första fråga.'));
-  }
-  let shown = 0;
-  for (const conversation of conversations) {
-    const query = searchConversations.value.trim().toLocaleLowerCase('sv');
-    if (query && !conversation.title.toLocaleLowerCase('sv').includes(query) &&
-        !conversation.messages.some(item => item.question.toLocaleLowerCase('sv').includes(query))) continue;
-    shown++;
-    const row = element('div', 'conversation-row');
-    const button = element('button', `conversation${conversation.id === activeId ? ' active' : ''}`, conversation.title);
-    button.type = 'button';
-    button.title = conversation.title;
-    button.addEventListener('click', () => {
-      if (pendingChat && activeId !== conversation.id) pendingChat.abort();
-      activeId = conversation.id;
-      closeMenu();
-      render();
-    });
-    const remove = element('button', 'conversation-delete', '×');
-    remove.type = 'button';
-    remove.title = `Radera ${conversation.title}`;
-    remove.setAttribute('aria-label', `Radera chatten ${conversation.title}`);
-    remove.addEventListener('click', () => {
-      const position = conversations.findIndex(item => item.id === conversation.id);
-      const wasActive = activeId === conversation.id;
-      if (pendingChat && wasActive) pendingChat.abort();
-      conversations = conversations.filter(item => item.id !== conversation.id);
-      if (wasActive) activeId = null;
-      saveConversations();
-      render();
-      clearTimeout(undoTimer);
-      undoToast.replaceChildren(element('span', '', 'Chatten raderades.'));
-      const undo = element('button', '', 'Ångra');
-      undo.type = 'button';
-      undo.addEventListener('click', () => {
-        conversations.splice(position, 0, conversation);
-        if (wasActive) activeId = conversation.id;
-        saveConversations();
-        undoToast.hidden = true;
-        clearTimeout(undoTimer);
-        render();
-      });
-      undoToast.append(undo);
-      undoToast.hidden = false;
-      undoTimer = setTimeout(() => { undoToast.hidden = true; }, 8000);
-    });
-    row.append(button, remove);
-    conversationsNode.append(row);
-  }
-  if (conversations.length && !shown) conversationsNode.append(element('p', 'empty-history', 'Inga chattar matchar sökningen.'));
-}
-searchConversations.addEventListener('input', renderSidebar);
-
-function renderWelcome() {
-  const welcome = element('section', 'welcome');
-  welcome.append(element('span', 'welcome-badge', 'Matchorakel'));
-  const heading = element('h1');
-  heading.append('Vilken match vill du analysera?');
-  welcome.append(heading);
-  welcome.append(element('p', '', 'Skriv två lag eller fråga om form, mål och matchdatum.'));
-  welcome.append(element('div', 'suggestion-title', 'Exempel'));
-  const suggestions = element('div', 'suggestions');
-  const examples = ['Barcelona mot Real Madrid', 'Barcelona mot PSG, vad är vanligast?',
-    'När spelar Barcelona i Champions League?', 'Bayern mot Dortmund'];
-  for (const example of examples) {
-    const button = element('button', 'suggestion');
-    button.type = 'button';
-    button.append(element('span', '', example), element('span', '', '↗'));
-    button.addEventListener('click', () => {
-      input.value = example;
-      form.requestSubmit();
-    });
-    suggestions.append(button);
-  }
-  welcome.append(suggestions);
-  content.append(welcome);
-}
-
-function responseHeader(box) {
-  const top = element('div', 'response-top');
-  top.append(element('span', 'bot-mark', 'M'), element('span', 'response-meta', 'Matchorakel'));
-  box.append(top);
-}
-
-function renderFixture(item) {
-  const row = element('div', 'fixture-card');
-  const when = item.utc_date ? new Date(item.utc_date) : null;
-  const date = when && !Number.isNaN(when.getTime())
-    ? new Intl.DateTimeFormat('sv-SE', {dateStyle: 'full', timeStyle: 'short', timeZone: 'Europe/Stockholm'}).format(when)
-    : 'Datum saknas';
-  row.append(element('span', 'fixture-date', `${date} · svensk tid`));
-  row.append(element('strong', 'fixture-pair', `${item.home} – ${item.away}`));
-  const venueText = item.venue_confidence === 'likely_home'
-    ? `Trolig hemmaarena: ${item.venue} · inte bekräftad för matchen`
-    : item.venue ? `Bekräftad arena: ${item.venue}` : 'Arena ännu inte bekräftad';
-  row.append(element('span', 'fixture-venue', venueText));
-  const lastSync = item.synced_at ? new Date(item.synced_at) : null;
-  row.append(element('small', 'fixture-source', `Källa: ${item.source || 'okänd'} · hämtat ${lastSync && !Number.isNaN(lastSync.getTime()) ? lastSync.toLocaleDateString('sv-SE') : 'okänt datum'}`));
-  return row;
-}
-
-function renderFixtures(box, data) {
-  box.append(element('div', 'result-kicker', `${data.league_name} · PUBLICERAT SPELSCHEMA`));
-  box.append(element('h2', 'result-title', data.title || 'Kommande matcher'));
-  if (data.summary) box.append(element('p', 'result-summary', data.summary));
-  for (const match of (Array.isArray(data.fixtures) ? data.fixtures : []))
-    if (match && typeof match.home === 'string' && typeof match.away === 'string') box.append(renderFixture(match));
-  if (['UCL', 'FAC', 'CDR', 'EL', 'UECL', 'DFB', 'CIT'].includes(data.league))
-    box.append(element('p', 'source-note', `${data.league_name} visas som spelschema. Ingen separat modell har tränats för den cupen.`));
-}
-
-function renderPrediction(box, data) {
-  const {home, away, probabilities: p} = data;
-  if (typeof home !== 'string' || typeof away !== 'string' ||
-      !p || !['H', 'D', 'A'].every(key => p[key] !== null && p[key] !== undefined &&
-        Number.isFinite(Number(p[key])) && Number(p[key]) >= 0 && Number(p[key]) <= 100) ||
-      Math.abs(['H', 'D', 'A'].reduce((sum, key) => sum + Number(p[key]), 0) - 100) > 0.3) {
-    box.append(element('p', 'answer-text', 'Prognosens data saknas eller är ogiltig. Försök igen efter att modellerna uppdaterats.'));
-    return;
-  }
-  const f = data.features || {};
-  const labels = {H: `${home} vinner`, D: 'Oavgjort', A: `${away} vinner`};
-  const favorite = ['H', 'D', 'A'].reduce((best, key) => p[key] > p[best] ? key : best, 'H');
-  box.append(element('div', 'result-kicker', `${data.league_name} · MATCHPROGNOS`));
-  const fixture = element('div', 'fixture-heading');
-  fixture.append(teamBadge(home), element('h2', 'result-title', `${home} – ${away}`), teamBadge(away));
-  box.append(fixture);
-  if (data.fixture) box.append(renderFixture(data.fixture));
-  const hasScoreline = data.scoreline && Number.isInteger(data.scoreline.home) && Number.isInteger(data.scoreline.away);
-  if (hasScoreline) {
-    const score = element('div', 'score-pick');
-    const label = element('div', 'score-pick-label', 'Prediction');
-    const value = element('strong', 'score-pick-value', `${home} ${data.scoreline.home}–${data.scoreline.away} ${away}`);
-    const explanation = element('p', 'score-pick-detail',
-      `${labels[favorite]} ${Number(p[favorite]).toFixed(1)} %. ${data.scoreline.source || 'Uppskattat målantal'}.`);
-    score.append(label, value, explanation);
-    box.append(score);
-  }
-  if (!hasScoreline) box.append(element('p', 'result-summary', `${labels[favorite]} ${Number(p[favorite]).toFixed(1)} %. Exakt resultattips saknas.`));
-  if (['home_points','away_points','home_scored','away_scored','home_conceded','away_conceded'].every(key => Number.isFinite(f[key]))) {
-    const compared = [];
-    if (f.home_points !== f.away_points) {
-      const stronger = f.home_points > f.away_points ? home : away;
-      compared.push(`${stronger} har tagit ${Math.abs(f.home_points - f.away_points)} fler poäng på de fem senaste ligamatcherna.`);
-    }
-    if (f.home_scored !== f.away_scored) {
-      const attack = f.home_scored > f.away_scored ? home : away;
-      compared.push(`${attack} har gjort ${Math.abs(f.home_scored - f.away_scored)} fler mål under samma period.`);
-    }
-    if (f.home_conceded !== f.away_conceded) {
-      const defense = f.home_conceded < f.away_conceded ? home : away;
-      compared.push(`${defense} har släppt in ${Math.abs(f.home_conceded - f.away_conceded)} färre mål.`);
-    }
-    if (compared.length) box.append(element('p', 'result-summary', compared.slice(0, 2).join(' ')));
-  }
-  const outcomes = element('div', 'outcomes');
-  for (const key of ['H', 'D', 'A']) {
-    const card = element('div', `outcome${key === favorite ? ' best' : ''}`);
-    card.append(element('div', 'outcome-label', labels[key]));
-    card.append(element('div', 'outcome-number', `${Number(p[key]).toFixed(1)} %`));
-    const track = element('div', 'outcome-track');
-    const fill = element('div', 'outcome-fill');
-    fill.style.width = `${Math.max(0, Math.min(100, Number(p[key])))}%`;
-    track.append(fill);
-    card.append(track);
-    outcomes.append(card);
-  }
-  box.append(outcomes);
-  const markets = data.goal_markets && typeof data.goal_markets === 'object' ?
-    Object.entries(data.goal_markets).filter(([key, value]) =>
-      ['over_1_5', 'over_2_5', 'both_score'].includes(key) && Number.isFinite(Number(value))) : [];
-  if (markets.length) {
-    const summary = element('p', 'result-summary', 'Målmodell: ' +
-      markets.map(([key, value]) => `${{over_1_5:'minst 2 mål',over_2_5:'minst 3 mål',both_score:'båda lagen gör mål'}[key]} ${Number(value).toFixed(1)} %`).join(' · ') + '.');
-    box.append(summary);
-  }
-  const facts = element('div', 'facts');
-  for (const [team, points, scored, conceded, recent] of [
-    [home, f.home_points, f.home_scored, f.home_conceded, data.recent?.home],
-    [away, f.away_points, f.away_scored, f.away_conceded, data.recent?.away]
-  ]) {
-    const block = element('div');
-    block.append(element('h3', 'fact-heading', `${team} · senaste 5`));
-    const record = recent && [recent.wins, recent.draws, recent.losses].every(Number.isFinite)
-      ? `${recent.wins} vinster, ${recent.draws} oavgjorda, ${recent.losses} förluster. ` : '';
-    block.append(element('p', 'fact-text', [points, scored, conceded].every(Number.isFinite)
-      ? `${record}${points} av 15 poäng · ${scored} gjorda mål · ${conceded} insläppta mål i ligan.`
-      : 'Lagstatistik saknas i svaret.'));
-    if (Array.isArray(recent?.sequence)) {
-      const strip = element('div', 'form-sequence');
-      const games = recent.sequence.filter(game => game && typeof game === 'object');
-      strip.setAttribute('aria-label', `Form, äldst först: ${games.map(game => game.points === 3 ? 'vinst' : game.points === 1 ? 'oavgjort' : 'förlust').join(', ')}`);
-      for (const game of games) {
-        const status = game.points === 3 ? 'win' : game.points === 1 ? 'draw' : 'loss';
-        const pill = element('span', `form-pill ${status}`, status === 'win' ? 'V' : status === 'draw' ? 'O' : 'F');
-        pill.setAttribute('aria-hidden', 'true');
-        strip.append(pill);
-      }
-      block.append(strip);
-    }
-    facts.append(block);
-  }
-  box.append(facts);
-  if (data.additional_factors && Number.isFinite(Number(data.additional_factors.home_elo)) && Number.isFinite(Number(data.additional_factors.away_elo)))
-    box.append(element('p', 'source-note', `Lagstyrka i modellen: ${Math.round(data.additional_factors.home_elo)} / ${Math.round(data.additional_factors.away_elo)} Elo.`));
-  box.append(element('p', 'source-note', `${data.league_name || 'Liga'} · senaste resultat ${data.as_of || 'okänt'}`));
-  if (data.fixture?.utc_date) {
-    if (data.actual_result?.status === 'finished') {
-      const result = data.actual_result;
-      const predicted = ['H','D','A'].reduce((best, key) => p[key] > p[best] ? key : best, 'H');
-      box.append(element('p', 'source-note', `Facit: ${result.home_goals}–${result.away_goals}. Modellens mest troliga resultat var ${labels[predicted].toLowerCase()} och blev ${predicted === result.outcome ? 'rätt' : 'fel'}. Källa: ${result.source}.`));
-    } else {
-      const verify = element('button', 'result-check', 'Kontrollera utfallet efter matchen');
-      verify.type = 'button';
-      verify.addEventListener('click', async () => {
-        verify.disabled = true;
-        try {
-          const args = new URLSearchParams({league: data.league, home: data.home, away: data.away, date: data.fixture.utc_date});
-          const response = await fetch(`/api/match/result?${args}`);
-          const result = await response.json();
-          if (!response.ok) throw new Error(result.error || 'Resultatet kunde inte kontrolleras.');
-          data.actual_result = result;
-          saveConversations();
-          if (result.status === 'finished') render();
-          else verify.textContent = result.status === 'not_played' ? 'Matchen har inte börjat än' : 'Inget bekräftat resultat hittades';
-        } catch (error) { verify.textContent = error.message; }
-      });
-      box.append(verify);
-    }
-  }
-}
-
-function teamBadge(name) {
-  const badge = element('span', 'team-badge', name.split(' ').map(word => word[0]).slice(0, 2).join('').toUpperCase());
-  badge.title = name;
-  badge.setAttribute('aria-label', name);
-  return badge;
-}
-
-function renderInsight(box, data) {
-  box.append(element('div', 'result-kicker', `${data.league_name} · MATCHFAKTA`));
-  box.append(element('h2', 'result-title', data.title));
-  box.append(element('p', 'result-summary', data.summary));
-  if (data.fixture) box.append(renderFixture(data.fixture));
-  const grid = element('div', 'insight-grid');
-  for (const item of (Array.isArray(data.cards) ? data.cards : [])) {
-    if (!item || typeof item !== 'object') continue;
-    const card = element('div', 'insight-card');
-    card.append(element('span', 'insight-label', item.label));
-    card.append(element('strong', 'insight-value', item.value));
-    card.append(element('span', 'insight-detail', item.detail));
-    grid.append(card);
-  }
-  box.append(grid);
-  if (Array.isArray(data.teams) && data.teams.length) {
-    const teams = element('div', 'insight-teams');
-    for (const team of data.teams) {
-      if (!team || typeof team.name !== 'string') continue;
-      const line = element('div', 'insight-team');
-      line.append(teamBadge(team.name), element('span', 'insight-team-name', team.name));
-      const games = element('div', 'form-sequence');
-      for (const game of (Array.isArray(team.sequence) ? team.sequence : [])) {
-        if (!game || typeof game !== 'object') continue;
-        const status = game.points === 3 ? 'win' : game.points === 1 ? 'draw' : 'loss';
-        const pill = element('span', `form-pill ${status}`, status === 'win' ? 'V' : status === 'draw' ? 'O' : 'F');
-        pill.title = `${status === 'win' ? 'Vinst' : status === 'draw' ? 'Oavgjort' : 'Förlust'} · ${game.scored}–${game.conceded}`;
-        games.append(pill);
-      }
-      line.append(games);
-      teams.append(line);
-    }
-    box.append(teams);
-  }
-  box.append(element('p', 'source-note', `${data.source_note || 'Historiska ligamatcher'} · senast ${data.as_of || 'okänt'}`));
-}
-
-function renderTurn(turn, latest) {
-  const wrapper = element('section', 'turn');
-  wrapper.append(element('div', 'question', turn.question));
-  const box = element('div', `response${turn.error ? ' error-response' : ''}`);
-  responseHeader(box);
-  if (turn.combined) {
-    (Array.isArray(turn.combined.parts) ? turn.combined.parts : []).forEach((part, index) => {
-      if (!part || typeof part !== 'object') return;
-      if (index) box.append(element('hr', 'answer-divider'));
-      if (part.kind === 'prediction') renderPrediction(box, part);
-      else if (part.kind === 'insight') renderInsight(box, part);
-      else if (part.kind === 'fixtures') renderFixtures(box, part);
-      else box.append(element('p', 'answer-text', part.response || 'Jag behöver ett tydligare underlag för den delen.'));
-    });
-  }
-  else if (turn.prediction) renderPrediction(box, turn.prediction);
-  else if (turn.insight) renderInsight(box, turn.insight);
-  else if (turn.fixtures) renderFixtures(box, turn.fixtures);
-  else if (turn.text) {
-    box.append(element('p', 'answer-text', turn.text));
-    if (turn.source) box.append(element('p', 'source-note', turn.source));
-  }
-  else if (turn.error) box.append(element('p', '', turn.error));
-  else {
-    const loading = element('div', 'loading-row', 'Tittar på frågan');
-    const dots = element('span', 'dots');
-    dots.append(element('span'), element('span'), element('span'));
-    loading.append(dots);
-    box.append(loading);
-  }
-  if (turn.error) {
-    const retry = element('button', 'result-check', 'Försök igen');
-    retry.type = 'button';
-    retry.addEventListener('click', () => { if (!busy) { input.value = turn.question; form.requestSubmit(); } });
-    box.append(retry);
-  }
-  wrapper.append(box);
-  if (latest && !turn.error && Array.isArray(turn.suggestions) && turn.suggestions.length) {
-    const section = element('div', 'followups');
-    section.append(element('span', 'followups-label', 'Fortsätt fråga'));
-    for (const suggestion of turn.suggestions.slice(0, 3)) {
-      if (typeof suggestion !== 'string' || !suggestion.trim()) continue;
-      const button = element('button', 'followup', suggestion);
-      button.type = 'button';
-      button.addEventListener('click', () => {
-        if (busy) return;
-        input.value = suggestion;
-        form.requestSubmit();
-      });
-      section.append(button);
-    }
-    wrapper.append(section);
-  }
-  content.append(wrapper);
-}
-
-function render() {
-  input.placeholder = 'Fråga om en match eller ett lag ...';
-  renderSidebar();
-  content.replaceChildren();
-  const conversation = activeConversation();
-  if (!conversation?.messages.length) renderWelcome();
-  else conversation.messages.forEach((turn, index) => renderTurn(turn, index === conversation.messages.length - 1));
-  scrollToBottom();
-}
-
-openSidebarButton.addEventListener('click', () => {
-  if (window.matchMedia?.('(min-width: 721px)').matches) {
-    appShell.classList.toggle('sidebar-collapsed');
-    openSidebarButton.setAttribute('aria-expanded', String(!appShell.classList.contains('sidebar-collapsed')));
-    return;
-  }
-  const expanded = sidebar.classList.toggle('open');
-  scrim.hidden = !expanded;
-  openSidebarButton.setAttribute('aria-expanded', String(expanded));
-});
-document.querySelector('#closeSidebar').addEventListener('click', closeMenu);
-scrim.addEventListener('click', closeMenu);
-document.querySelector('#newChat').addEventListener('click', () => {
-  if (pendingChat) pendingChat.abort();
-  activeId = null;
-  closeMenu();
-  render();
-  input.focus();
-});
-form.addEventListener('submit', async event => {
-  event.preventDefault();
-  const question = input.value.trim();
-  if (!question || busy) return;
-  if (!activeConversation()) {
-    const conversation = {id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, title: question, messages: []};
-    conversations.unshift(conversation);
-    activeId = conversation.id;
-  }
-  const conversation = activeConversation();
-  const turn = {question};
-  const previous = [...conversation.messages].reverse().find(item => item.topicReset || item.combined?.context || item.prediction?.context || item.prediction?.home || item.insight?.context || item.fixtures?.context || item.context);
-  const rawContext = previous?.combined?.context || previous?.prediction?.context || previous?.insight?.context || previous?.fixtures?.context || previous?.context ||
-    (previous?.prediction ? {home: previous.prediction.home, away: previous.prediction.away} : null);
-  const context = previous?.topicReset ? null : rawContext ? {...rawContext, league: rawContext.league || previous?.prediction?.league || conversation.league} : null;
-  const history = conversation.messages.slice(-20).map(item => ({question: item.question,
-    answer: item.text || item.insight?.summary || item.combined?.parts?.map(part => part.summary || part.response || '').join(' ') || ''}));
-  conversation.messages.push(turn);
-  const requestedId = conversation.id;
-  input.value = '';
-  busy = true;
-  sendButton.disabled = true;
-  const controller = new AbortController();
-  pendingChat = controller;
-  const timeout = setTimeout(() => controller.abort(), 60000);
-  saveConversations();
-  render();
-  try {
-    const response = await fetch('/chat', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({message: question, context, history}), signal: controller.signal
-    });
-    const data = await response.json().catch(() => { throw new Error('Servern gav ett ogiltigt svar. Försök igen.'); });
-    if (controller.signal.aborted) return;
-    if (!response.ok) throw new Error(data.error || 'Kunde inte analysera matchen.');
-    if (!data || typeof data !== 'object' || typeof data.kind !== 'string') throw new Error('Svaret saknar matchdata. Försök igen.');
-    if ((data.kind === 'text' && (typeof data.response !== 'string' || !data.response.trim())) ||
-        (data.kind === 'fixtures' && !Array.isArray(data.fixtures)) ||
-        (data.kind === 'insight' && !Array.isArray(data.cards)) ||
-        (data.kind === 'combined' && !Array.isArray(data.parts)) ||
-        (data.kind === 'prediction' && (!data.probabilities || typeof data.probabilities !== 'object')) ||
-        !['text','fixtures','insight','combined','prediction'].includes(data.kind))
-      throw new Error('Servern gav ett ofullständigt svar. Försök igen.');
-    turn.suggestions = Array.isArray(data.suggestions) ? data.suggestions : [];
-    turn.analysisId = data.analysis_id;
-    turn.createdAt = data.created_at;
-    if (data.kind === 'text') {
-      turn.text = data.response;
-      turn.context = data.context;
-      turn.source = data.source;
-      turn.topicReset = Boolean(data.topic_reset);
-    } else if (data.kind === 'insight') {
-      turn.insight = data;
-    } else if (data.kind === 'fixtures') {
-      turn.fixtures = data;
-    } else if (data.kind === 'combined') {
-      turn.combined = data;
-      turn.topicReset = Boolean(data.topic_reset);
-    } else {
-      turn.prediction = data;
-    }
-  } catch (error) {
-    turn.error = controller.signal.aborted ? 'Anropet avbröts eller tog för lång tid. Försök igen.' : error.message || 'Kunde inte ansluta till servern.';
-  } finally {
-    clearTimeout(timeout);
-    if (pendingChat === controller) pendingChat = null;
-    busy = false;
-    sendButton.disabled = false;
-    saveConversations();
-    if (activeId === requestedId) render();
-    input.focus();
-    refreshCapability();
-  }
-});
-
-render();
-function refreshCapability() { return fetch('/api/chat/status').then(reply => reply.json()).then(data => {
-  document.querySelector('#openData').hidden = Boolean(data.public);
-  chatCapability.textContent = data.ai_health === 'failed'
-    ? `AI-tjänsten svarar inte${Number.isInteger(data.ai_error_code) ? ` (HTTP ${data.ai_error_code})` : ''} · matchfakta fungerar fortfarande`
-    : data.ai_health === 'ok'
-    ? 'AI-anslutningen fungerar'
-    : data.language_model
-    ? 'AI är inställd men anslutningen är ännu inte testad'
-    : 'Fotbollsfrågor fungerar utan AI-anslutning';
-}).catch(() => { chatCapability.textContent = 'Matchorakel · kontrollera att anslutningen fungerar'; }); }
-refreshCapability();
+function resultCheck(a,container){const btn=button('Kontrollera resultat','result-check',async()=>{btn.disabled=true;const original=btn.textContent;try{const q=new URLSearchParams({league:a.league,home:a.home,away:a.away,date:a.fixture.utc_date});const r=await fetchJSON('/api/match/result?'+q);btn.textContent=r.status==='finished'?`Resultat: ${r.home_goals}–${r.away_goals}`:r.status==='not_played'?'Matchen är inte spelad ännu':'Resultat saknas – försök igen';}catch{btn.textContent='Kunde inte hämta – försök igen';}finally{btn.disabled=false;btn.setAttribute('aria-label',btn.textContent||original);}});container.append(btn);}
+function turnNode(turn,animate=false){const node=element('article','turn');node.dataset.turnId=turn.id;node.append(element('div','question'+(animate?' new-message':''),turn.question));const response=element('div','response');if(turn.error){response.setAttribute('role','alert');response.append(element('p','error-response',turn.error),button('Försök igen','retry-button',()=>submitQuestion(turn.question,turn)));}else if(turn.answer){renderAnswer(turn.answer,response);const actions=element('div','response-actions');actions.append(button('Kopiera','copy-button',async e=>{const target=e.currentTarget;try{await navigator.clipboard.writeText(answerText(turn.answer));target.textContent='Kopierat';}catch{announce('Kopiering stöds inte här. Markera texten och kopiera.');}}));response.append(actions);}else{response.append(element('div','loading-dot'));response.setAttribute('aria-label','Väntar på svar');}node.append(response);return node;}
+function updateTurn(turn){const old=[...content.children].find(n=>n.dataset.turnId===turn.id);const follow=nearBottom();if(old){const fresh=turnNode(turn);old.querySelector('.response').replaceWith(fresh.querySelector('.response'));old.querySelector('.response').classList.add('new-message');}if(follow)scrollBottom();renderFollowup();}
+function renderFollowup(){const host=$('#followups');host.replaceChildren();const last=current()?.messages.at(-1);if(!last?.answer||pending)return;const suggestion=last.answer.suggestions?.find(x=>typeof x==='string');if(suggestion)host.append(button(suggestion,'followup',()=>submitQuestion(suggestion)));}
+function render(){content.replaceChildren();const chat=current();workspace.classList.toggle('is-empty',!chat?.messages.length);chat?.messages.forEach(t=>content.append(turnNode(t)));renderSidebar();renderFollowup();syncInput();requestAnimationFrame(()=>scrollBottom());}
+function conversationContext(chat){for(const t of [...chat.messages].reverse()){if(t.answer?.topic_reset)return null;if(t.answer?.context)return t.answer.context;}return null;}
+async function fetchJSON(url,options={}){const ctrl=new AbortController(),abort=()=>ctrl.abort(),timer=setTimeout(abort,20000);options.signal?.addEventListener('abort',abort,{once:true});if(options.signal?.aborted)abort();try{const r=await fetch(url,{...options,signal:ctrl.signal});const data=await r.json();if(!r.ok)throw new Error(data.error||`Anropet misslyckades (${r.status}).`);return data;}finally{clearTimeout(timer);options.signal?.removeEventListener('abort',abort);}}
+function stopRequest(redraw=true,persist=true){const old=pending;if(!old)return;pending=null;old.controller.abort();clearTimeout(old.timer);old.turn.error='Svaret stoppades.';old.turn.answer=null;fetch('/api/chat/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:old.id}),keepalive:true}).catch(()=>{});if(persist)save();syncInput();if(redraw&&activeId===old.chatId)updateTurn(old.turn);}
+async function submitQuestion(value,retryTurn=null){const question=value.trim();if(!question||pending)return;if(question.length>2000){announce('Skriv högst 2 000 tecken.');return;}let chat=current();if(!chat){chat={id:uid(),title:question.slice(0,65),createdAt:Date.now(),updatedAt:Date.now(),messages:[]};conversations.unshift(chat);activeId=chat.id;history.replaceState({chatId:activeId},'');}
+const previousTurns=retryTurn?chat.messages.slice(0,chat.messages.indexOf(retryTurn)):chat.messages;
+const previousContext=conversationContext({...chat,messages:previousTurns});const prior=previousTurns.filter(t=>t.answer&&!t.error).slice(-8).map(t=>({question:t.question,answer:answerText(t.answer)}));
+const turn=retryTurn||{id:uid(),question};turn.answer=null;turn.error=null;if(!retryTurn)chat.messages.push(turn);chat.updatedAt=Date.now();const requestId=uid(),controller=new AbortController();const operation={id:requestId,chatId:chat.id,controller,turn};pending=operation;
+operation.timer=setTimeout(()=>{if(pending===operation){stopRequest();turn.error='Svaret tog för lång tid. Försök igen.';save();if(activeId===chat.id)updateTurn(turn);}},60000);
+const wasEmpty=workspace.classList.contains('is-empty');const before=$('.composer-area').getBoundingClientRect();workspace.classList.remove('is-empty');input.value='';syncInput();if(retryTurn)updateTurn(turn);else content.append(turnNode(turn,true));renderSidebar();renderFollowup();if(wasEmpty&&!reduced.matches){const after=$('.composer-area').getBoundingClientRect();$('.composer-area').animate([{transform:`translateY(${before.top-after.top}px)`},{transform:'translateY(0)'}],{duration:280,easing:'cubic-bezier(.2,0,0,1)'});}scrollBottom();save();
+try{const response=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:question,context:previousContext,history:prior,request_id:requestId}),signal:controller.signal});const data=await response.json();if(pending!==operation||!conversations.some(c=>c.id===chat.id))return;if(!response.ok||data.kind==='error')throw new Error(data.error||'Svaret kunde inte hämtas.');if(!validAnswer(data))throw new Error('Servern skickade ett ofullständigt svar.');turn.answer=data;turn.error=null;}
+catch(error){if(pending!==operation)return;turn.error=error.name==='AbortError'?'Svaret avbröts.':navigator.onLine?(error instanceof TypeError?'Anslutningen bröts. Försök igen.':error.message):'Du är offline. Anslut till internet och försök igen.';}
+finally{clearTimeout(operation.timer);if(pending===operation){pending=null;save();syncInput();if(activeId===chat.id){updateTurn(turn);announce(turn.error||'Svar klart.');}}}}
+form.addEventListener('submit',e=>{e.preventDefault();submitQuestion(input.value);});
+function panelOpen(title){panelRequest?.abort();panelRequest=new AbortController();$('#panelTitle').textContent=title;panelBody.replaceChildren();if(!panel.open)panel.showModal();return panelRequest;}
+function closePanel(){panelRequest?.abort();panelRequest=null;panel.close();}$('#closePanel').addEventListener('click',closePanel);panel.addEventListener('cancel',()=>{panelRequest?.abort();panelRequest=null;});panel.addEventListener('click',e=>{if(e.target===panel){const r=panel.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)closePanel();}});
+function panelError(message,retry){panelBody.replaceChildren(element('p','error-response',message),button('Försök igen','panel-action',retry));}
+function skeleton(){panelBody.append(element('div','loading-skeleton'),element('div','loading-skeleton short'));}
+async function showMatches(){const op=panelOpen('Matcher och favoritlag');skeleton();try{const raw=await fetchJSON('/api/fixtures',{signal:op.signal});if(panelRequest!==op)return;if(!Array.isArray(raw))throw Error('Schemat kunde inte läsas.');const fixtures=raw.filter(f=>f&&typeof f.home==='string'&&typeof f.away==='string'&&Number.isFinite(Date.parse(f.utc_date)));panelBody.replaceChildren();const select=element('select','panel-select');select.setAttribute('aria-label','Tävling');for(const[k,v]of Object.entries({all:'Alla tävlingar',favorites:'Favoritlag',...LEAGUE_NAMES})){const o=element('option','',v);o.value=k;select.append(o);}const search=element('input','panel-input');search.placeholder='Sök lag';search.setAttribute('aria-label','Sök lag');const list=element('div','match-list');let limit=6;
+function draw(){list.replaceChildren();const q=favoriteKey(search.value);const selected=fixtures.filter(f=>(select.value==='all'||select.value===f.league||select.value==='favorites'&&[f.home,f.away].some(t=>favorites.includes(favoriteKey(t))))&&favoriteKey(f.home+' '+f.away).includes(q));if(!selected.length)list.append(element('p','panel-muted',select.value==='favorites'?'Inga kommande matcher för dina favoritlag.':'Inga matcher hittades i det hämtade schemat.'));for(const f of selected.slice(0,limit)){const row=element('div','match-row');row.append(element('div','match-row-teams',`${f.home} – ${f.away}`),element('div','match-row-date',fixtureDate(f)),element('div','match-row-venue',venueText(f)));const actions=element('div','match-row-actions');for(const team of [f.home,f.away]){const key=favoriteKey(team),chosen=favorites.includes(key);const fav=button((chosen?'Följer ':'Följ ')+team,'favorite-button',()=>{favorites=favorites.includes(key)?favorites.filter(x=>x!==key):[...favorites,key];writeJSON(FAVORITES_KEY,favorites);draw();});fav.setAttribute('aria-pressed',String(chosen));actions.append(fav);}actions.append(button('Fråga om matchen','panel-ask',()=>{closePanel();closeMobile();submitQuestion(`${f.home} mot ${f.away} i ${LEAGUE_NAMES[f.league]||f.league}, när spelas matchen?`);}));row.append(actions);list.append(row);}if(selected.length>limit)list.append(button('Visa fler','panel-action',()=>{limit+=6;draw();}));}
+select.addEventListener('change',()=>{limit=6;draw();});search.addEventListener('input',()=>{limit=6;draw();});panelBody.append(select,search,list);draw();}catch(e){if(panelRequest===op&&!op.signal.aborted)panelError(e.message,showMatches);}}
+$('#openMatches').addEventListener('click',showMatches);
+async function showAbout(){const op=panelOpen('Om Matchorakel');panelBody.append(element('p','','Matchprognoser och statistik för '+Object.values(LEAGUE_NAMES).slice(0,5).join(', ')+'.'),element('p','','Cupmatcher: '+Object.values(LEAGUE_NAMES).slice(5).join(', ')+'. Scheman beror på datakällans åtkomst. Cupanalyser bygger på ligahistorik.'),element('p','panel-muted','Matchdata: football-data.co.uk och football-data.org. Chattar sparas i den här webbläsaren.'));try{const status=await fetchJSON('/api/chat/status',{signal:op.signal});if(panelRequest===op)panelBody.append(element('p','panel-muted',status.ai_health==='ok'?'Gemini svarade på det senaste kontrollerade anropet.':status.ai_health==='unconfigured'?'Gemini är inte konfigurerad på servern.':'Gemini: '+({unverified:'ännu inte testad',failed:'senaste anropet misslyckades'}[status.ai_health]||'status saknas')+'.'));}catch{if(panelRequest===op)panelBody.append(element('p','panel-muted','Anslutningsstatus kunde inte hämtas.'));}}
+$('#openAbout').addEventListener('click',showAbout);
+async function showDataStatus(){const op=panelOpen('Uppdatera data');skeleton();try{const state=await fetchJSON('/api/data/status',{signal:op.signal});if(panelRequest!==op)return;panelBody.replaceChildren();for(const record of Object.values(state.leagues||{}))panelBody.append(element('div','panel-data-row',`${record.name}: ${record.trained?'modell finns':'modell saknas'}, ${record.files} matchfiler`));panelBody.append(element('p','panel-muted',state.job?.message||'Ingen uppdatering pågår.'));const token=element('input','panel-input');token.type='password';token.autocomplete='new-password';token.placeholder='Datanyckel (endast för spelschema)';token.setAttribute('aria-label','football-data.org-nyckel');panelBody.append(token);for(const[k,label]of[['fixtures','Uppdatera spelschema'],['results','Uppdatera resultat och modeller']]){const b=button(label,'panel-action',async()=>{b.disabled=true;try{await fetchJSON('/api/data/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:k,token:token.value})});token.value='';showDataStatus();}catch(e){if(panelRequest===op){panelBody.append(element('p','error-response',e.message));b.disabled=false;}}});b.disabled=!!state.job?.running;panelBody.append(b);}if(state.job?.running)setTimeout(()=>{if(panelRequest===op&&panel.open)showDataStatus();},3000);}catch(e){if(panelRequest===op&&!op.signal.aborted)panelError(e.message,showDataStatus);}}
+$('#openData').addEventListener('click',showDataStatus);
+window.addEventListener('storage',e=>{if(e.key===STORAGE_KEY){stopRequest(false,false);clearTimeout(undoTimer);$('#undoToast').hidden=true;conversations=readConversations();if(!current())activeId=null;render();announce('Chatthistoriken uppdaterades från en annan flik.');}else if(e.key===FAVORITES_KEY){const v=readJSON(FAVORITES_KEY,[]);favorites=Array.isArray(v)?v.filter(x=>typeof x==='string'):[];}});
+window.addEventListener('pagehide',()=>stopRequest(false));
+function viewport(){if(window.visualViewport)document.documentElement.style.setProperty('--app-height',window.visualViewport.height+'px');}
+window.visualViewport?.addEventListener('resize',viewport);viewport();matchMedia('(max-width:720px)').addEventListener('change',e=>setSidebar(!e.matches));setSidebar(!matchMedia('(max-width:720px)').matches);
+if(!current())activeId=null;history.replaceState({chatId:activeId},'');render();fetchJSON('/api/chat/status').then(s=>{$('#openData').hidden=s.public!==false;}).catch(()=>{});

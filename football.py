@@ -2,6 +2,7 @@
 from collections import defaultdict, deque
 from pathlib import Path
 import re
+import math
 import unicodedata
 
 import pandas as pd
@@ -41,7 +42,7 @@ def clean_name(name):
 
 ALIASES = {
     'PL': {
-        'man utd': 'man united', 'manchester united': 'man united',
+        'man u': 'man united', 'man utd': 'man united', 'manchester united': 'man united',
         'manchester city': 'man city', 'spurs': 'tottenham',
         'tottenham hotspur': 'tottenham', 'wolverhampton wanderers': 'wolves',
         'newcastle united': 'newcastle', 'brighton hove albion': 'brighton',
@@ -52,11 +53,11 @@ ALIASES = {
     },
     'LL': {
         'fc barcelona': 'barcelona', 'barca': 'barcelona', 'barca fc': 'barcelona',
-        'barceona': 'barcelona', 'madrid': 'real madrid',
+        'barceona': 'barcelona', 'barcelnoa': 'barcelona', 'atleti': 'atletico madrid', 'real': 'real madrid', 'madrid': 'real madrid',
         'real madrid cf': 'real madrid', 'atletico': 'atletico madrid',
         'atletico madrid': 'atletico madrid',
         'atletico de madrid': 'atletico madrid', 'ath madrid': 'atletico madrid',
-        'ath bilbao': 'athletic bilbao', 'athletic club': 'athletic bilbao',
+        'athletic': 'athletic bilbao', 'ath bilbao': 'athletic bilbao', 'athletic club': 'athletic bilbao',
         'athletic club bilbao': 'athletic bilbao',
         'betis': 'real betis', 'real betis balompie': 'real betis',
         'sociedad': 'real sociedad', 'real sociedad de futbol': 'real sociedad',
@@ -143,11 +144,19 @@ def load_matches(folder: Path, league='PL'):
                 frame[column] = pd.to_numeric(frame[column], errors='coerce')
         frame = frame.dropna(subset=list(REQUIRED))
         frame = frame[frame.FTR.isin(['H', 'D', 'A'])].copy()
+        for column in ('FTHG', 'FTAG'):
+            if not frame[column].map(lambda n: math.isfinite(n) and 0 <= n <= 30 and float(n).is_integer()).all():
+                raise ValueError(f'{path.name}: ogiltigt målantal.')
+        for column in TEAM_STATS:
+            if column in frame:
+                frame[column] = frame[column].where(frame[column].map(lambda n: pd.isna(n) or (math.isfinite(n) and 0 <= n <= 100 and float(n).is_integer())))
         expected = frame.apply(lambda r: 'H' if r.FTHG > r.FTAG else 'A' if r.FTHG < r.FTAG else 'D', axis=1)
         if not frame.FTR.eq(expected).all():
             raise ValueError(f'{path.name} innehåller resultat som inte stämmer med målen.')
         frame['HomeTeam'] = frame.HomeTeam.map(lambda value: team_key(value, league))
         frame['AwayTeam'] = frame.AwayTeam.map(lambda value: team_key(value, league))
+        if (frame.HomeTeam == frame.AwayTeam).any() or frame.HomeTeam.eq('').any() or frame.AwayTeam.eq('').any():
+            raise ValueError(f'{path.name}: ogiltiga lag i matchfilen.')
         frames.append(frame)
     matches = pd.concat(frames, ignore_index=True)
     if matches.empty:
@@ -163,7 +172,7 @@ def load_matches(folder: Path, league='PL'):
 def form(history):
     if len(history) < WINDOW:
         return None
-    return tuple(sum(item[i] for item in history) for i in range(3))
+    return tuple(sum(item[i] for item in list(history)[-WINDOW:]) for i in range(3))
 
 
 def feature_row(home, away, history, venue_history=None, ratings=None, last_played=None, date=None):
@@ -192,7 +201,7 @@ def feature_row(home, away, history, venue_history=None, ratings=None, last_play
 
 
 def recent_form(history):
-    games = list(history)
+    games = list(history)[-WINDOW:]
     result = {
         'wins': sum(item[0] == 3 for item in games),
         'draws': sum(item[0] == 1 for item in games),
@@ -278,9 +287,27 @@ def known_teams(matches):
 
 
 def find_teams(message, teams, league='PL'):
+    message = re.sub(r'\s+[-–—]\s+|[–—]|(?i:(?<=inter)-(?=milan))', ' vs ', message)
     normalized = clean_name(message)
+    # A known longer club name must never be shortened to another club.
+    for unsupported in ('inter miami', 'inter turku', 'bayern alzenau', 'paris fc'):
+        normalized = re.sub(r'\b' + unsupported + r'\b', ' unsupportedclub ', normalized)
+    normalized = re.sub(r'\breal (?=prediction|answer|data|model|football)', ' actual ', normalized)
+    normalized = re.sub(r'\bnice (?=thanks|thank|job|work|answer)', ' pleasant ', normalized)
     candidates = {clean_name(name): name for name in teams}
     candidates.update({alias: canonical for alias, canonical in ALIASES[league].items() if canonical in teams})
+    # Conservative one-edit recovery for long single-word team names.
+    def near(a, b):
+        if abs(len(a)-len(b)) > 1: return False
+        if len(a) == len(b):
+            wrong = [i for i in range(len(a)) if a[i] != b[i]]
+            return len(wrong) == 1 or (len(wrong) == 2 and wrong[1] == wrong[0]+1 and a[wrong[0]] == b[wrong[1]] and a[wrong[1]] == b[wrong[0]])
+        small, big = sorted((a,b), key=len)
+        return any(big[:i]+big[i+1:] == small for i in range(len(big)))
+    for word in normalized.split():
+        if len(word) < 6 or word in candidates: continue
+        close = {target for alias, target in candidates.items() if ' ' not in alias and len(alias)>=6 and near(word, alias)}
+        if len(close)==1: candidates[word]=next(iter(close))
     hits = []
     for name, canonical in candidates.items():
         match = re.search(r'(?<![a-z0-9])' + re.escape(name) + r'(?:s)?(?![a-z0-9])', normalized)

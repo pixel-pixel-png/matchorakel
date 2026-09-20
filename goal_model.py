@@ -23,7 +23,10 @@ class GoalModel(ClassifierMixin, BaseEstimator):
     @staticmethod
     def matrix(home_rate, away_rate):
         def probabilities(rate):
-            rate = max(.05, min(float(rate), 8.0))
+            rate = float(rate)
+            if not math.isfinite(rate) or rate < 0:
+                raise ValueError('Ogiltig målfrekvens.')
+            rate = max(.05, min(rate, 8.0))
             first = [math.exp(-rate) * rate**n / math.factorial(n) for n in range(11)]
             return np.array(first + [max(0., 1 - sum(first))])
         joint = np.outer(probabilities(home_rate), probabilities(away_rate))

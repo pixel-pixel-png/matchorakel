@@ -4,8 +4,8 @@ import threading
 
 from app import app
 
-if os.environ.get('MATCHORAKEL_PUBLIC') == '1' and not os.environ.get('GROQ_API_KEY', '').strip():
-    print('AI-chatt är inte aktiverad: GROQ_API_KEY saknas i Render Environment.', flush=True)
+if os.environ.get('MATCHORAKEL_PUBLIC') == '1' and not os.environ.get('GEMINI_API_KEY', '').strip():
+    print('AI-chatt är inte aktiverad: GEMINI_API_KEY saknas i Render Environment.', flush=True)
 
 
 def update_public_fixtures():

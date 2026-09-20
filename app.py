@@ -6,6 +6,8 @@ import re
 import threading
 import time
 import uuid
+import sys
+import socket
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,7 +21,8 @@ from conversation import football_followup, parts_of_question, suggestions
 from football import ALIASES, FEATURES, LEAGUES, clean_name, feature_row, find_teams, load_matches, parse_teams, recent_form, team_display
 from fixtures import CUP_ALIASES, CUP_NAMES, fixture_public, home_venue, normalize_team, read_fixtures, upcoming_fixtures
 from goal_model import GoalModel
-from language_chat import connection_error_code, connection_health, general_answer, language_status
+from language_chat import connection_error_code, connection_health, general_answer, language_status, request_cancel, request_error, Cancelled
+from chat_logic import route_question, resolve
 from player_data import player_summary
 
 ROOT = Path(__file__).resolve().parent
@@ -34,6 +37,8 @@ chat_lock = threading.Lock()
 chat_requests = defaultdict(deque)
 total_requests = deque()
 daily_requests = deque()
+active_requests = {}
+model_lock = threading.RLock()
 job_status = {'running': False, 'message': 'Inga uppdateringar pågår.', 'log': []}
 
 
@@ -53,7 +58,9 @@ def get_state(league='PL'):
         if not path.exists():
             raise ValueError(f'Modellen för {LEAGUES[league]["name"]} saknas. Kör py fetch_data.py och py train_model.py.')
         # Ladda bara egna modeller: joblib-filer från andra kan innehålla kod.
-        states[league] = joblib.load(path)
+        with model_lock:
+            if league not in states:
+                states[league] = joblib.load(path)
     return states[league]
 
 
@@ -70,6 +77,10 @@ def predict_match(home_team: str, away_team: str, league='PL') -> dict:
     feature_names = saved.get('feature_names', FEATURES)
     probability = model.predict_proba(pd.DataFrame([features], columns=feature_names))[0]
     values = dict(zip(model.classes_, probability))
+    if set(values) != {'H', 'D', 'A'} or any(not math.isfinite(float(v)) or not 0 <= float(v) <= 1 for v in values.values()) or abs(sum(values.values())-1) > .001:
+        raise ValueError('Matchmodellens sannolikheter är ogiltiga.')
+    if any(not math.isfinite(float(v)) for v in features.values()):
+        raise ValueError('Matchstatistiken är ofullständig.')
     goal_markets = {}
     # En exakt resultatrad är en osäker punktprognos från målmodellen.
     # Den validerade 1X2-modellen nedan får behålla sina egna sannolikheter.
@@ -83,6 +94,8 @@ def predict_match(home_team: str, away_team: str, league='PL') -> dict:
         home_rate = (features['home_scored'] + features['away_conceded']) / 10
         away_rate = (features['away_scored'] + features['home_conceded']) / 10
         score_source = 'Grov uppskattning från lagens senaste fem matcher · ej validerad'
+    if any(not math.isfinite(rate) or rate < 0 for rate in (home_rate, away_rate)):
+        raise ValueError('Målmodellens värden är ogiltiga.')
     home_rate, away_rate = (max(.05, min(8., rate)) for rate in (home_rate, away_rate))
     score_matrix = GoalModel.matrix(home_rate, away_rate)
     most_likely = max(((h, a) for h in range(8) for a in range(8)),
@@ -90,7 +103,7 @@ def predict_match(home_team: str, away_team: str, league='PL') -> dict:
     if saved.get('goal_model') and saved.get('goal_market_enabled'):
         raw = saved['goal_model'].goal_markets(pd.DataFrame([features], columns=saved['goal_features']))[0]
         goal_markets = {market: round(raw[market] * 100, 1)
-                        for market, enabled in saved['goal_market_enabled'].items() if enabled}
+                        for market, enabled in saved['goal_market_enabled'].items() if enabled and market in raw and math.isfinite(float(raw[market])) and 0 <= raw[market] <= 1}
     return {
         'home': team_display(home, league), 'away': team_display(away, league),
         'league': league, 'league_name': LEAGUES[league]['name'],
@@ -572,7 +585,7 @@ def safest_history(saved, league, home, away):
                    as_of=saved['last_match'])
 
 
-def answer_single(message, context=None, history=None):
+def legacy_answer_single(message, context=None, history=None):
     plain = clean_name(message)
     if (('menade' in plain and 'inte' in plain) or 'istallet for' in plain) and isinstance(context, dict) and context.get('league') in LEAGUES:
         code = context['league']
@@ -607,17 +620,6 @@ def answer_single(message, context=None, history=None):
     football_concept = any(term in plain for term in (
         'offside', 'falsk nia', 'pressmonster', 'pressing', 'bollinnehav',
         'xg', 'expected goals', 'frispark', 'straffspark', 'formation', 'uppstallning'))
-    if not any(mentioned_teams) and not explicit_cup and not football_followup(message):
-        if football_concept:
-            explanation = general_answer(message, {'fotbollsbegrepp': 'Ingen aktuell match eller verifierad matchstatistik.'}, history)
-            if explanation:
-                result = text_response(explanation)
-                result['source'] = 'Språkmodell'
-                return result
-            return text_response('Jag kunde inte ansluta till AI:n just nu. Försök igen om en stund.')
-        result = text_response('Jag hjälper till med fotboll. Fråga om en match eller ett lag.')
-        result['topic_reset'] = True
-        return result
     switch_from_ucl = new_domestic_pair and explicit_ucl and any(term in plain for term in
                        ('inte champions', 'inte ucl', 'slapp cl', 'glom psg', 'men nu',
                         'nu galler', 'ar klart', 'nasta fraga', 'varfor blandar du in'))
@@ -659,6 +661,8 @@ def answer_single(message, context=None, history=None):
     home = away = None
     if len(found) == 2:
         home, away = found
+        if re.search(r'\b(?:borta|away)\s+(?:mot|against|at|hos)\b|\bat\b', normalized):
+            home, away = away, home
     elif isinstance(context, dict) and context.get('league') == league:
         previous_home, previous_away = context.get('home'), context.get('away')
         if isinstance(previous_home, str) and isinstance(previous_away, str):
@@ -669,7 +673,7 @@ def answer_single(message, context=None, history=None):
     # Ett nytt lagnamn ska inte låta en gammal match tolka resten av frågan.
     targets = found[:2] if found else ([home, away] if home and away else [])
     snapshots = [team_snapshot(saved, team, league) for team in targets]
-    if home and away and any(term in normalized for term in ('lapp', 'speltips', 'vad ska jag spela')):
+    if home and away and re.search(r'\b(lapp|speltips|vad ska jag spela)\b', normalized):
         forecast = predict_match(home, away, league)
         candidates = []
         outcomes = forecast['probabilities']
@@ -935,8 +939,18 @@ def answer_single(message, context=None, history=None):
     return text_response('Jag kan visa matchprognoser, lagform, mål, hållna nollor, lagens skott och kort, samt modellens testresultat. Skriv ett lag eller två lag i någon av de fem ligorna. För individuella spelare krävs en separat verifierad spelarfil.', league, home, away)
 
 
+def answer_single(message, context=None, history=None):
+    handled = route_question(message, context, history, sys.modules[__name__])
+    if handled is not None:
+        return handled
+    resolved, _, _ = resolve(message, context, sys.modules[__name__])
+    if re.search(r'\b(menade|istallet for)\b', clean_name(message)):
+        resolved = context
+    return legacy_answer_single(message, resolved, history)
+
+
 def answer_question(message, context=None, history=None):
-    pieces = parts_of_question(message)
+    pieces = parts_of_question(message)[:3]
     if len(pieces) == 1:
         return answer_single(message, context, history)
     answers = []
@@ -949,6 +963,8 @@ def answer_question(message, context=None, history=None):
         active = context_for(code, home, away)
     for part in pieces:
         answer = answer_single(part, active, history)
+        if answer.get('kind') == 'error':
+            return answer
         answers.append(answer)
         if answer.get('topic_reset'):
             active = None
@@ -979,7 +995,7 @@ def not_found(_error):
 
 @app.errorhandler(413)
 def too_large(_error):
-    return jsonify(error='Frågan är för stor. Skriv högst 500 tecken.'), 413
+    return jsonify(error='Frågan är för stor. Skriv högst 2 000 tecken.'), 413
 
 
 @app.get('/evaluation')
@@ -997,9 +1013,16 @@ def evaluation():
                 valid_metrics = (isinstance(report, dict) and isinstance(report.get('test'), dict) and
                                  all(isinstance(metric, dict) and all(key in metric for key in
                                      ('accuracy', 'log_loss', 'brier')) for metric in report['test'].values()))
+                valid_metrics = valid_metrics and all(
+                    isinstance(metric[k], (int,float)) and not isinstance(metric[k], bool) and math.isfinite(metric[k]) and metric[k]>=0
+                    for metric in report.get('test', {}).values() for k in ('accuracy','log_loss','brier'))
                 if valid_periods and valid_metrics and all(key in report for key in
                     ('league', 'source_matches', 'selected_model')):
-                    if not isinstance(report.get('odds_benchmark'), dict):
+                    benchmark = report.get('odds_benchmark')
+                    valid_benchmark = isinstance(benchmark, dict) and isinstance(benchmark.get('matches'), int) and all(
+                        isinstance(benchmark.get(section),dict) and all(isinstance(benchmark[section].get(k),(int,float)) and math.isfinite(benchmark[section][k]) for k in ('accuracy','log_loss'))
+                        for section in ('market','selected_model_same_matches'))
+                    if not valid_benchmark:
                         report['odds_benchmark'] = None
                     reports.append(report)
             except (OSError, ValueError, UnicodeError):
@@ -1152,8 +1175,8 @@ def chat():
     if not isinstance(body, dict):
         return jsonify(error='Skicka en giltig fråga.'), 400
     message = body.get('message', '')
-    if not isinstance(message, str) or not message.strip() or len(message) > 500:
-        return jsonify(error='Skriv en fråga på högst 500 tecken.'), 400
+    if not isinstance(message, str) or not message.strip() or len(message) > 2000:
+        return jsonify(error='Skriv en fråga på högst 2 000 tecken.'), 400
     if PUBLIC_SITE and not allow_public_chat(request.remote_addr or 'unknown'):
         return jsonify(error='Chatten har nått sin tillfälliga gräns. Prova igen senare.'), 429
     raw_context = body.get('context')
@@ -1161,17 +1184,71 @@ def chat():
                 if isinstance(raw_context.get(field), str) and len(raw_context[field]) <= 100}
                if isinstance(raw_context, dict) else None)
     raw_history = body.get('history')
-    history = [{field: item[field][:400] for field in ('question', 'answer')
+    history = [{field: item[field][:1800] for field in ('question', 'answer')
                 if isinstance(item.get(field), str)}
-               for item in raw_history[-20:] if isinstance(item, dict)] if isinstance(raw_history, list) else []
+               for item in raw_history[-8:] if isinstance(item, dict)] if isinstance(raw_history, list) else []
+    visitor = request.remote_addr or 'unknown'
+    request_id = body.get('request_id')
+    if not isinstance(request_id, str) or not re.fullmatch(r'[a-zA-Z0-9-]{12,80}', request_id):
+        request_id = uuid.uuid4().hex
+    key = (visitor, request_id)
+    cancel = threading.Event()
+    cancel.response = None
+    with chat_lock:
+        if key in active_requests:
+            return jsonify(error='Samma fråga behandlas redan.'), 409
+        if sum(address == visitor for address, _ in active_requests) >= 2:
+            return jsonify(error='Vänta tills det pågående svaret är färdigt.'), 429
+        active_requests[key] = cancel
+    cancel_token = request_cancel.set(cancel)
+    request_error.set(None)
     try:
-        answer = answer_question(message, context, history[-20:])
-        answer['suggestions'] = suggestions(answer, history[-20:], message)
+        answer = answer_question(message.strip(), context, history)
+        if cancel.is_set():
+            return jsonify(error='Svaret stoppades.'), 499
+        if answer.get('kind') == 'error':
+            reason = request_error.get() or {}
+            return jsonify(answer), 429 if reason.get('code') == 429 else 503
+        answer['suggestions'] = suggestions(answer, history, message)
         answer['analysis_id'] = uuid.uuid4().hex[:12]
         answer['created_at'] = datetime.now(timezone.utc).isoformat()
+        # Flask normally permits NaN. Refuse invalid numerical values at the boundary.
+        json.dumps(answer, allow_nan=False)
         return jsonify(answer)
+    except Cancelled:
+        return jsonify(error='Svaret stoppades.'), 499
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
+    except Exception as exc:
+        app.logger.error('Chat request %s failed: %s', request_id, type(exc).__name__)
+        return jsonify(error='Matchunderlaget kunde inte läsas. Försök igen.'), 503
+    finally:
+        request_cancel.reset(cancel_token)
+        with chat_lock:
+            active_requests.pop(key, None)
+
+
+@app.post('/api/chat/cancel')
+def cancel_chat():
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or not isinstance(body.get('request_id'), str):
+        return jsonify(error='Ogiltigt anrops-id.'), 400
+    with chat_lock:
+        event = active_requests.get((request.remote_addr or 'unknown', body['request_id']))
+        if event:
+            event.set()
+            response = getattr(event, 'response', None)
+        else:
+            response = None
+    if response:
+        try:
+            sock = getattr(getattr(getattr(response, 'fp', None), 'raw', None), '_sock', None)
+            if sock:
+                sock.shutdown(socket.SHUT_RDWR)
+            response.close()
+        except OSError:
+            pass
+    return jsonify(cancelled=event is not None)
 
 
 if __name__ == '__main__':

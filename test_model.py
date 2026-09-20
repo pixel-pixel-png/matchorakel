@@ -32,3 +32,20 @@ class ModelTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class DataValidationTests(unittest.TestCase):
+ def test_invalid_goals_rejected_and_invalid_optional_stats_omitted(self):
+  import tempfile
+  from pathlib import Path
+  from football import load_matches
+  with tempfile.TemporaryDirectory() as folder:
+   path=Path(folder)/'matches.csv'
+   for goals in ['-1','1.5','inf']:
+    path.write_text(f'Date,HomeTeam,AwayTeam,FTHG,FTAG,FTR\n01/01/2025,Arsenal,Chelsea,{goals},0,H\n')
+    with self.subTest(goals=goals),self.assertRaises(ValueError):load_matches(Path(folder),'PL')
+   path.write_text('Date,HomeTeam,AwayTeam,FTHG,FTAG,FTR,HST,HY\n01/01/2025,Arsenal,Chelsea,2,0,H,inf,-1\n')
+   rows=load_matches(Path(folder),'PL');self.assertTrue(pd.isna(rows.iloc[0].HST));self.assertTrue(pd.isna(rows.iloc[0].HY))
+ def test_fuzzy_alias_does_not_match_an_english_adjective(self):
+  from football import find_teams
+  self.assertEqual(find_teams('a real prediction',['real madrid'],'LL'),[])
+  self.assertEqual(find_teams('nice thanks',['nice'],'L1'),[])

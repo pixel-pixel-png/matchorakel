@@ -1,13 +1,62 @@
-# Testprotokoll — Matchorakel V12
+# Matchorakel – slutkontroll 2026-09-20
 
-Testat lokalt 19 september 2026. En kartläggning omfattade Flask-routes, ligamodeller, målmodell, cupscheman, språkmodell, svarskontext, CSS och JavaScript. Rättelserna omfattar validering av felaktig JSON och saknad schemadata, missvisande svar om xG/kort/skott, tyst UI-låsning vid tomt serversvar, avbrutna anrop, ogiltig utvärderingsfil och en 404-sida.
+## Resultat och testgräns
 
-- `python -m unittest discover -s tests -q`: 46 regressioner godkända, inklusive 36 varierade kvalitetsfrågor och svar, felkoder för Groq samt en lokal HTTP-server.
-- Två oberoende extra belastningsrundor: 560 kombinationer av formulering och kontext i regressionerna samt 1 200 störda HTTP-anrop utöver dessa; inga HTTP 500 i extra rundan.
-- `node ui_stress.cjs` och `node ui_smoke.js`: simulerad historik, dubbla händelser, tomma/felaktiga svar, panel, favoriter, filter, ångra och matchkort godkända. JavaScript syntaxkontroll godkänd.
-- Lokala HTTP-anrop till `/`, `/evaluation`, `/health`, `/api/fixtures`, `/chat` och en okänd adress provades med en separat startad Flask-process. CSS parsades med jsdom (179 regler). Textkontrast i huvudpaletten beräknades till minst 5,65:1.
-- Tidigare kördes hela träningskedjan med 360 syntetiska matcher och en faktisk sparad testmodell. Dessa matcher mäter **inte** träffsäkerhet på verkliga matcher.
+Tolv numrerade omgångar är genomförda, med 30 nya fall per omgång utöver 199 grundfall. Slutkorpusen innehåller **559 fall**. Omgång 11 och 12 passerade hela den då befintliga korpusen utan nya fel. Dessutom passerade **48 unittest-metoder**, inklusive korpusen som subtester; dessa är inte 48 ytterligare oberoende användarsamtal.
 
-**Inte testat:** En riktig Groq-förfrågan, fotbollsleverantörens API med ägarens nyckel, deploy av V12 till Render och pixelvisuell kontroll i en riktig webbläsare. Chromium kunde inte laddas ned i arbetsmiljön (timeout). En ansluten modell kan fortfarande producera felaktiga påståenden; prompt och tester minskar risken men bevisar inte faktakorrekthet. Efter publicering behövs en snabb manuell mobilkontroll vid 360, 390 och 768 px och desktop vid 1024 och 1440 px.
+Chromium körs mot riktig lokal Flask, med syntetiska matchfiler/modeller, vid 360, 390, 768, 1024 och 1440 px. Resultat, tidigare misslyckanden, omkörningar och skärmbilder finns i `qa/results`. Testerna omfattar navigation, historik, dialoger, favoriter, tangentbord, IME, stopp, retry, sena svar, chattbyte, flera flikar, modellrapport, 404 och horisontell overflow. Inga JavaScript-undantag rapporterades i de sista körningarna.
 
-**Datagränser:** xG, verifierade skador, startelvor, liveodds och individuell spelarprognos saknas. Cuptips använder ligahistorik och är inte särskilt validerade. Enskilda slutresultat är punktuppskattningar och inte testade marknadssannolikheter. Cuper kan saknas i gratisplanens datatäckning.
+**Detta är inte 559 riktiga Gemini-svar.** Ingen Gemini-nyckel finns i testmiljön. Försöket att fråga den publicerade sidan gav timeout. Native Gemini-payload, kandidatparsning, safety, MAX_TOKENS, kvot, cache och felhantering har testats med kontrollerade API-svar. En frivillig live-runner med 30 frågor ingår. Kravet på riktiga Gemini-körningar är alltså inte uppfyllt här.
+
+## Dokumenterade grundfel
+
+Nedan räknas 24 avgränsade grundfel, inte antal symptom eller misslyckade parametriserade fall. Förebyggande skydd räknas inte som bevisade produktionsfel.
+
+| Klass | Antal rättade | Grundfel |
+| --- | ---: | --- |
+| A: innehåll | 3 | Lagpar i en transferfråga blev prediction; fråga om framtida mål hamnade i historiksvar; ”släpper in” matchade ”lapp” och gav spelalternativ. |
+| B: lag/input | 4 | Inter–Milan kollapsade till ett alias; `vs.` delade frågan; Athletic saknade alias; engelska orden real/nice träffade klubbar. |
+| C: kontext | 3 | Motståndarkorrigering förlorade ursprungsparet; `borta mot … vad tror du?` missade prediction; redan levererad prediction föreslogs igen efter ett naket lagpar. |
+| D: oväntade frågor | 3 | Väderfråga gick till fel reservväg; engelskt tack fick svenskt svar; ligavinnarfråga med `the` bad felaktigt om två lag. |
+| E: teknik | 4 | Escape stängde både dialog och drawer; kopieraknapp läste currentTarget efter await; lagringshändelse kunde skriva tillbaka gammal historik; panelanrop med yttre abort saknade egen timeout. |
+| F: data | 6 | Ogiltiga matchtal accepterades; oändliga/fraktionella spelartal accepterades; tom spelarfil tappade kolumner efter filtrering; null i utvärdering gav 500; spelad matchfråga kunde välja framtida möte; preliminär avspark behandlades som exakt klockslag. |
+| G: AI-format | 1 | Filtret för svenska `Absolut` åt bara början av engelska `Absolutely`. |
+
+Tre särskilt viktiga fel var förlorad matchkontext vid korrigering, framtida möte som svar på en spelad match och historik som kunde återuppstå mellan flikar.
+
+## Omgångar och kontroller
+
+| Omgång | Korpus efter utökning | Exempel på fynd/utökning |
+| --- | ---: | --- |
+| 1 | 229 | Separatorer, felstavningar, scope och dialog/drawer. |
+| 2 | 259 | Öppna fotbollsfrågor, chattbyte, avbrott, lagringshändelser. |
+| 3 | 289 | Athletic, framtida mål och upprepade predictions. |
+| 4 | 319 | Engelska alias/fyllnadsfraser, ogiltiga CSV-värden. |
+| 5 | 349 | Fler språk-, schema- och datakanter. |
+| 6 | 379 | Cuporientering, spelade matcher, saknade uppgifter. |
+| 7 | 409 | Engelskt tack, ligavinnare och avslutad match. |
+| 8 | 439 | Bredare följdfrågor och felresponser. |
+| 9 | 469 | Korrigering, insläppta mål, spelarfil och utvärdering. |
+| 10 | 499 | Hemma/borta och suffixet ”vad tror du?”. |
+| 11 | 529 | Nya kombinerade frågor, engelska resultatfrågor, datum. |
+| 12 | 559 | Mellanslag, skador, venues, mål/kort och kontext. |
+
+Kör `py -m unittest discover -s tests -v` och `py qa/run_cases.py --round manual`. Browser-runnern kräver Playwright och Chromium. Testdata är tydligt syntetisk och används aldrig i produktionsstarten.
+
+## Design och Gemini
+
+Dekorativa ligalistor, statusprickar, avatarer och etiketter är borttagna ur chatten. Tävlingar finns i Om Matchorakel. Neutral mörk palett, lokalt Inter, 768 px innehåll, mobil drawer, växande input, en följdfråga och diskreta övergångar. Dov grågrön accent används i prognosstaplar för att framhäva siffror utan att dominera chatten.
+
+Gemini använder systemInstruction, korrekta user/model-roller, begränsad historik, låg temperatur, thinking-inställning, begränsad retry och cache. Fel loggas utan nyckel. Tal valideras mot underlaget; resultat och sannolikheter kommer från Pythonmodellen. Fullständiga svar valideras före visning, därför används inte streaming. Nuvarande `GEMINI_API_KEY` och `MATCHORAKEL_GEMINI_MODEL` behålls; ingen namnändring krävs.
+
+## Inte verifierat / kända begränsningar
+
+- Riktiga Gemini-svars kvalitet, safetybeteende och fördröjning efter denna uppdatering. Kontrollerade API-svar ersätter inte liveprov.
+- Ingen ny träningskörning eller förbättrad träffsäkerhet på verkliga matcher har verifierats. Nedladdning av matchfiler lyckades inte i miljön. Befintliga lokala data/modeller bevaras av uppdateraren.
+- Ingen publicering till ditt GitHub/Render-konto, ingen inspektion av din privata konfiguration eller fullständiga git-historik.
+- Ingen fysisk iPhone/Android eller Safari: viewporttester kan inte bevisa tangentbordsbeteendet där.
+- Ingen garanti för sanningen i alla fria AI-formuleringar. Sifferkontrollen verifierar förekomst, inte hela betydelsen. Inga nycklar är inkluderade i paketet.
+- Aktuella startelvor, skador, xG och målskyttsmodeller saknas där datakällan saknar dem. Cupbedömningar är märkta uppskattningar från ligahistorik.
+- Minnesbaserade kvoter kräver en process och nollställs vid omstart. Stopp kan inte återkalla beräkningar leverantören redan utfört.
+
+Ingen känd blockerande regression återstår i de genomförda lokala testerna. Projektet kan inte ärligt betecknas som garanterat felfritt eller fullständigt liveverifierat.

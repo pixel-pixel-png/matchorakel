@@ -1,6 +1,7 @@
 """Importerade spelscheman från football-data.org (egen API-nyckel krävs)."""
 import json
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 from football import LEAGUES, ALIASES, clean_name, team_key
@@ -39,7 +40,9 @@ def read_fixtures(root: Path):
             item.get('league') in (*LEAGUES, *CUP_NAMES) and
             isinstance(item.get('home'), str) and item['home'].strip() and
             isinstance(item.get('away'), str) and item['away'].strip() and
-            isinstance(item.get('utc_date'), str)]
+            isinstance(item.get('utc_date'), str) and fixture_time(item) is not None and
+            isinstance(item.get('status'), str) and
+            normalize_team(item['home'], item['league']) != normalize_team(item['away'], item['league'])]
 
 
 def read_venues(root: Path):
@@ -74,12 +77,15 @@ def fixture_time(fixture):
 def upcoming_fixtures(root, league, home=None, away=None, team=None):
     """Matcha exakta teamnamn och kommande matcher; hitta aldrig på en arena."""
     now = datetime.now(timezone.utc)
+    home = normalize_team(home, league) if home else None
+    away = normalize_team(away, league) if away else None
+    team = normalize_team(team, league) if team else None
     results = []
     for match in read_fixtures(root):
         if match.get('league') != league or match.get('status') not in ('SCHEDULED', 'TIMED'):
             continue
         date = fixture_time(match)
-        if not date or date < now:
+        if not date or (date < now and (match.get('status') != 'SCHEDULED' or date.date() < now.date())):
             continue
         first = normalize_team(match.get('home') or '', league)
         second = normalize_team(match.get('away') or '', league)
@@ -88,7 +94,7 @@ def upcoming_fixtures(root, league, home=None, away=None, team=None):
         if team and team not in (first, second):
             continue
         results.append(match)
-    return sorted(results, key=lambda match: match['utc_date'])
+    return sorted(results, key=fixture_time)
 
 
 def home_venue(root, league, home):
@@ -110,6 +116,9 @@ def home_venue(root, league, home):
 def fixture_public(match, root=None):
     result = {key: match.get(key) for key in
               ('league', 'home', 'away', 'utc_date', 'venue', 'status', 'synced_at', 'source', 'match_id', 'score')}
+    result['kickoff_confirmed'] = match.get('status') in ('TIMED', 'IN_PLAY', 'PAUSED', 'FINISHED')
+    if not isinstance(result['venue'], str) or not result['venue'].strip():
+        result['venue'] = None
     result['venue_confidence'] = 'confirmed' if result['venue'] else 'unknown'
     result['venue_source'] = result['source'] if result['venue'] else None
     if not result['venue'] and root:
@@ -119,4 +128,21 @@ def fixture_public(match, root=None):
             result['venue_confidence'] = 'likely_home'
             result['venue_source'] = estimated.get('source')
             result['venue_updated_at'] = estimated.get('synced_at')
+    return result
+
+
+def display_fixture_date(match, language='sv'):
+    stamp = fixture_time(match)
+    if not stamp:
+        return 'Date unavailable.' if language == 'en' else 'Datum saknas.'
+    # SCHEDULED has a date placeholder, not a confirmed local kickoff time.
+    timed = match.get('kickoff_confirmed', match.get('status') in ('TIMED','IN_PLAY','PAUSED','FINISHED'))
+    date = stamp.astimezone(ZoneInfo('Europe/Stockholm')) if timed else stamp
+    months = ('januari februari mars april maj juni juli augusti september oktober november december'.split() if language == 'sv' else
+              'January February March April May June July August September October November December'.split())
+    result = f'{date.day} {months[date.month-1]} {date.year}'
+    if timed:
+        result += date.strftime(' %H:%M') + (' svensk tid' if language=='sv' else ' Stockholm time')
+    else:
+        result += ' · avspark inte fastställd' if language=='sv' else ' · kickoff time unconfirmed'
     return result
