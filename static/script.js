@@ -33,7 +33,7 @@ $('#closeSidebar').addEventListener('click',()=>{setSidebar(false);$('#openSideb
 function closeMobile(){if(matchMedia('(max-width:720px)').matches)setSidebar(false);}
 function switchChat(id,record=true){stopRequest(false);activeId=conversations.some(c=>c.id===id)?id:null;if(record)history.pushState({chatId:activeId},'');render();closeMobile();input.focus();}
 function newChat(){switchChat(null);input.value='';syncInput();}
-$('#newChat').addEventListener('click',newChat);$('#brandHome').addEventListener('click',newChat);
+$('#newChat').addEventListener('click',newChat);$('#newChatTop').addEventListener('click',newChat);$('#brandHome').addEventListener('click',newChat);
 window.addEventListener('popstate',e=>switchChat(e.state?.chatId||null,false));
 function historyGroup(chat){const stamp=new Date(chat.updatedAt||chat.createdAt||Number(chat.id.split('-')[0])||0);const today=new Date();today.setHours(0,0,0,0);const yesterday=new Date(today);yesterday.setDate(today.getDate()-1);return stamp>=today?'Idag':stamp>=yesterday?'Igår':'Tidigare';}
 function deleteChat(chat){if(pending?.chatId===chat.id)stopRequest(false);conversations=conversations.filter(c=>c.id!==chat.id);if(activeId===chat.id)activeId=conversations[0]?.id||null;save();render();const toast=$('#undoToast');toast.hidden=false;toast.replaceChildren(element('span','','Chatten raderades.'),button('Ångra','',()=>{if(!conversations.some(c=>c.id===chat.id))conversations.unshift(chat);activeId=chat.id;save();render();toast.hidden=true;clearTimeout(undoTimer);}));clearTimeout(undoTimer);undoTimer=setTimeout(()=>toast.hidden=true,8000);}
