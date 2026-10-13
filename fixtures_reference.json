@@ -1,0 +1,19 @@
+{
+  "description": "Verifierad historisk referens, inte ett liveflöde. Nyare API-uppgifter har företräde.",
+  "fixtures": [
+    {
+      "league": "UCL", "home": "Galatasaray", "away": "FC Barcelona",
+      "utc_date": "2026-10-13T19:00:00Z", "status": "FINISHED",
+      "score": {"home": 1, "away": 4}, "venue": "RAMS Park",
+      "synced_at": "2026-10-13T21:40:00Z", "source": "FC Barcelona · officiellt matchresultat",
+      "source_url": "https://www.fcbarcelona.com/en/futbol/primer-equipo/resultados"
+    },
+    {
+      "league": "UCL", "home": "Atlético de Madrid", "away": "Manchester United FC",
+      "utc_date": "2026-10-13T19:00:00Z", "status": "FINISHED",
+      "score": {"home": 2, "away": 0}, "venue": "Riyadh Air Metropolitano",
+      "synced_at": "2026-10-13T21:40:00Z", "source": "The Guardian · matchrapport; arena enligt Atlético",
+      "source_url": "https://www.theguardian.com/football/live/2026/oct/13/atletico-madrid-v-manchester-united-champions-league-live"
+    }
+  ]
+}

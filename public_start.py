@@ -17,4 +17,5 @@ def update_public_fixtures():
 
 
 if os.environ.get('MATCHORAKEL_PUBLIC') == '1' and os.environ.get('FOOTBALL_DATA_TOKEN', '').strip():
-    threading.Thread(target=update_public_fixtures, daemon=True).start()
+    from fixture_refresh import start_fixture_refresh
+    start_fixture_refresh()

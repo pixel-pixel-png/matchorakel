@@ -3,6 +3,7 @@ import argparse
 import getpass
 import json
 import os
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from time import sleep
@@ -12,6 +13,7 @@ from urllib.request import Request, urlopen
 from fixtures import COMPETITIONS, CUP_NAMES, PROVIDER, fixture_time, normalize_team, read_fixtures, read_venues
 
 ROOT = Path(__file__).resolve().parent
+UPDATE_LOCK = threading.Lock()
 
 
 def fetch_competition(code, token):
@@ -71,6 +73,11 @@ def save_fixtures(matches, venues=None):
 
 
 def main(league=None, token=None, logger=print):
+    with UPDATE_LOCK:
+        return _main(league, token, logger)
+
+
+def _main(league=None, token=None, logger=print):
     token = (token or os.environ.get('FOOTBALL_DATA_TOKEN', '')).strip()
     if not token:
         token = getpass.getpass('Klistra in din football-data.org API-nyckel (visas inte): ').strip()
@@ -79,7 +86,7 @@ def main(league=None, token=None, logger=print):
     matches = read_fixtures(ROOT)
     venues = read_venues(ROOT)
     success = 0
-    selected = [league] if league else COMPETITIONS
+    selected = [league] if league else ['UCL', *[code for code in COMPETITIONS if code != 'UCL']]
     for index, code in enumerate(selected):
         if index:
             logger('Väntar 7 sekunder före nästa liga (API:ets anropsgräns)...')

@@ -9,7 +9,7 @@ import uuid
 import sys
 import socket
 from collections import defaultdict, deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import joblib
@@ -346,18 +346,18 @@ def ucl_evidence(matches, question, competition="UCL"):
             events = list((state.get('event_history') or {}).get(key, []))
             if shots or broad:
                 recorded = [event['shots'] for event in events if isinstance(event, dict)
-                            and isinstance(event.get('shots'), (int, float))]
+                            and valid_event_count(event.get('shots'))]
                 observations.extend([(f'{name}: minst {minimum} skott på mål', [value >= minimum for value in recorded])
-                                     for minimum in (3, 4)])
+                                     for minimum in (5, 6, 7, 8)])
             if yellows or broad:
                 recorded = [event['cards'] for event in events if isinstance(event, dict)
-                            and isinstance(event.get('cards'), (int, float))]
+                            and valid_event_count(event.get('cards'))]
                 observations.extend([(f'{name}: minst {minimum} gula kort', [value >= minimum for value in recorded])
                                      for minimum in (2, 3)])
         if goals or broad:
             totals = [event['total_goals'] for _, _, state, key in participants
                       for event in (state.get('event_history') or {}).get(key, [])
-                      if isinstance(event, dict) and isinstance(event.get('total_goals'), (int, float))]
+                      if isinstance(event, dict) and valid_event_count(event.get('total_goals'))]
             observations.extend([(f'Minst {minimum} mål i matchen', [value >= minimum for value in totals])
                                  for minimum in (3, 4)])
         for label, values in observations:
@@ -531,6 +531,11 @@ def other_cup_answer(message, context=None):
                           summary='Publicerat spelschema. Skriv båda lagen för analys utifrån lagens ligahistorik.')
 
 
+def valid_event_count(value):
+    return (isinstance(value, (int, float)) and not isinstance(value, bool) and
+            math.isfinite(value) and value >= 0 and float(value).is_integer())
+
+
 def safest_history(saved, league, home, away):
     histories = saved.get('event_history') or {}
     if not home or not away or home not in histories or away not in histories:
@@ -560,29 +565,52 @@ def safest_history(saved, league, home, away):
     combined = games[home] + games[away]
     if not any(category == 'mål' for _, category, _ in candidates):
         add('mål', 'Minst 3 mål totalt', [item['total_goals'] >= 3 for item in combined
-                                          if isinstance(item.get('total_goals'), (int, float))])
+                                          if valid_event_count(item.get('total_goals'))])
     for key in (home, away):
         label = team_display(key, league)
-        for field, text, category, thresholds in (('cards', 'gula kort', 'kort', (2, 3)),
-                                                   ('shots', 'skott på mål', 'skott', (3, 4))):
+        for field, text, category, thresholds in (('cards', 'gula kort', 'kort', (2, 3, 4)),
+                                                   ('shots', 'skott på mål', 'skott', (5, 6, 7, 8))):
             recorded = [item[field] for item in games[key]
-                        if isinstance(item.get(field), (int, float))]
+                        if valid_event_count(item.get(field))]
             for threshold in thresholds:
                 add(category, f'{label}: minst {threshold} {text}',
                     [value >= threshold for value in recorded])
     ordered = sorted(candidates, key=lambda item: item[0], reverse=True)
     selected = []
-    for category in ('mål', 'kort', 'skott'):
+    for category in ('mål', 'kort'):
         first = next((item for item in ordered if item[1] == category), None)
         if first:
             selected.append(first)
+    # Visa den högre laggränsen uttryckligen när den kan beräknas.
+    # Den historiska andelen är aldrig en prissatt eller validerad matchprognos.
+    high_shots = next((item for item in ordered if item[1] == 'skott' and
+                       'minst 7 skott på mål' in item[2]['label']), None)
+    if high_shots:
+        selected.append(high_shots)
+    first_shots = next((item for item in ordered if item[1] == 'skott' and item not in selected), None)
+    if first_shots:
+        selected.append(first_shots)
     selected.extend(item for item in ordered if item not in selected)
     if not selected:
         return text_response('Jag saknar tillräckligt underlag för meningsfulla mål-, kort- och skottförslag för lagen.', league, home, away)
-    return insight('Möjliga utfall att jämföra',
-                   'Målmodellens siffror är prognoser; skott och kort visar tidigare lagmatcher.',
+    return insight('Nivåer att jämföra',
+                   'Målmodellens siffror är prognoser. Skott och kort är historik, inte sannolikheter för nästa match. Jämför exakt gräns och odds själv.',
                    league, [card for _, _, card in selected[:4]], home=home, away=away,
                    as_of=saved['last_match'])
+
+
+def event_line(message, default):
+    """Return a threshold and direction for integer-valued team events."""
+    match = re.search(r'\b(minst|at least|over|över|mer än|mer an|under|högst|hogst|at most)\s+(-?\d+)(?:[.,](\d+))?\b', message, re.I)
+    if not match:
+        return default, 'minst'
+    direction, whole, decimal = match.group(1).lower(), match.group(2), match.group(3)
+    value = float(whole + ('.' + decimal if decimal else ''))
+    if not 0 <= value <= 100:
+        raise ValueError('Skriv en händelsegräns mellan 0 och 100.')
+    if direction in ('under', 'högst', 'hogst', 'at most'):
+        return (math.floor(value) if direction in ('högst', 'hogst', 'at most') else math.ceil(value)-1), 'högst'
+    return (math.ceil(value) if direction in ('minst', 'at least') else math.floor(value)+1), 'minst'
 
 
 def legacy_answer_single(message, context=None, history=None):
@@ -686,8 +714,19 @@ def legacy_answer_single(message, context=None, history=None):
                 candidates.append((probability, {'label': label, 'value': f'{probability:.1f} %',
                                                  'detail': 'Separat målmodell; ingen garanti'}))
         choices = [item for _, item in sorted(candidates, key=lambda pair: pair[0], reverse=True)[:3]]
+        observations = []
+        for team in (home, away):
+            events = (saved.get('event_history') or {}).get(team, [])
+            shots = [item['shots'] for item in events if isinstance(item, dict) and
+                     valid_event_count(item.get('shots'))]
+            if len(shots) >= 12:
+                count = sum(value >= 7 for value in shots)
+                observations.append((count / len(shots), {'label': f'{team_display(team, league)}: minst 7 skott på mål',
+                    'value': f'{count} / {len(shots)}', 'detail': 'Tidigare ligamatcher; ingen validerad skottprognos'}))
+        if observations:
+            choices.append(max(observations, key=lambda row: row[0])[1])
         response = insight('Möjliga val att jämföra',
-                           'Hög sannolikhet är inte samma sak som ett lönsamt spel. Jag har inga aktuella Unibet-odds; flera val på samma match är beroende av varandra och deras procentsatser får inte multipliceras. Kontrollera startelva och odds före beslut.',
+                           'Mål och matchutfall är modellprognoser; skott är enbart historik. Kontrollera att marknaden erbjuder exakt denna laggräns och jämför aktuella odds. Val på samma match är beroende av varandra.',
                            league, choices, home=home, away=away, as_of=saved['last_match'])
         response['fixture'] = forecast.get('fixture')
         response['source_note'] = 'Modell för slutresultat och mål; inga liveodds eller säkra spel.'
@@ -796,24 +835,26 @@ def legacy_answer_single(message, context=None, history=None):
         label = 'Skott på mål' if shot_query else 'Gula kort'
         if not snapshots:
             return text_response(f'Vilket lag menar du? Skriv till exempel ”Hur många {label.lower()} har Bayern haft?”.', league, home, away)
-        asks_future = bool(re.search(r'\b(?:far|kommer|tror|blir det|nasta match|over|minst)\b', normalized))
-        boundary = re.search(r'\b(over|mer an|minst)\s+(\d{1,2})\b', normalized)
+        asks_future = bool(re.search(r'\b(?:far|kommer|tror|blir det|nasta match|over|minst|under|hogst|at least|at most)\b', normalized))
         if asks_future:
-            threshold = int(boundary.group(2)) + (boundary.group(1) != 'minst') if boundary else (4 if shot_query else 2)
+            try:
+                threshold, direction = event_line(message, 7 if shot_query else 2)
+            except ValueError as error:
+                return text_response(str(error), league, home, away)
             event_key = 'shots' if shot_query else 'cards'
             cards = []
             for key in targets:
                 events = (saved.get('event_history') or {}).get(key, [])
                 observed = [item[event_key] for item in events if isinstance(item, dict)
-                            and isinstance(item.get(event_key), (int, float))]
+                            and valid_event_count(item.get(event_key))]
                 if len(observed) >= 12:
-                    count = sum(value >= threshold for value in observed)
-                    cards.append({'label': f'{team_display(key, league)}: minst {threshold} {label.lower()}',
+                    count = sum(value >= threshold if direction == 'minst' else value <= threshold for value in observed)
+                    cards.append({'label': f'{team_display(key, league)}: {direction} {threshold} {label.lower()}',
                                   'value': f'{count} av {len(observed)}',
                                   'detail': f'{count / len(observed):.0%} i tidigare ligamatcher; ingen testad matchprognos'})
             if cards:
                 response = insight(f'{label} · möjlig matchbild',
-                                   f'Jag skulle jämföra gränsen minst {threshold} {label.lower()} med lagens tidigare utfall nedan. Motstånd, startelva och matchtempo kan ändra det; siffrorna är historik och kan inte användas som säker sannolikhet för nästa match.',
+                                   f'Gränsen {direction} {threshold} {label.lower()} visas mot tidigare lagmatcher. Detta är historik, inte en validerad prognos eller aktuella odds.',
                                    league, cards, home=home, away=away, as_of=saved['last_match'])
                 response['source_note'] = 'Tidigare lagmatcher med registrerade händelser; ingen tränad modell för nästa matchs skott eller kort.'
                 return response
@@ -979,6 +1020,30 @@ def index():
     return render_template('index.html')
 
 
+@app.get('/privacy')
+@app.get('/terms')
+@app.get('/cookies')
+def policies():
+    page = request.path.strip('/')
+    titles = {'privacy': 'Integritet', 'terms': 'Användningsvillkor', 'cookies': 'Kakor och lokal lagring'}
+    return render_template('policies.html', page=page, title=titles[page],
+                           operator=os.environ.get('MATCHORAKEL_OPERATOR_NAME', '').strip(),
+                           contact=os.environ.get('MATCHORAKEL_CONTACT_EMAIL', '').strip())
+
+
+@app.after_request
+def security_headers(response):
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    response.headers['Permissions-Policy'] = 'camera=(), microphone=(), geolocation=()'
+    response.headers['Content-Security-Policy'] = ("default-src 'self'; script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; "
+        "connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+    if request.path == '/chat' or request.path.startswith('/api/') or request.path == '/health':
+        response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
 @app.get('/health')
 def health():
     return jsonify(status='ok', ai_health=connection_health(),
@@ -1048,6 +1113,15 @@ def fixture_list():
     if code and code not in (*LEAGUES, *CUP_NAMES):
         return jsonify(error='Okänd tävling.'), 400
     result = []
+    scope = request.args.get('scope', 'upcoming')
+    if scope not in ('upcoming','recent'):
+        return jsonify(error='Okänd matchvy.'),400
+    if scope == 'recent':
+        cutoff=datetime.now(timezone.utc)-timedelta(days=7)
+        from fixtures import fixture_time
+        return jsonify([fixture_public(f,ROOT) for f in sorted(read_fixtures(ROOT),key=fixture_time)
+                        if (not code or f['league']==code) and fixture_time(f)>=cutoff and
+                        f['status'] in ('SCHEDULED','TIMED','IN_PLAY','PAUSED','FINISHED','POSTPONED')][:500])
     for league in ([code] if code else [*LEAGUES, *CUP_NAMES]):
         result.extend(fixture_public(item, ROOT) for item in upcoming_fixtures(ROOT, league))
     return jsonify(sorted(result, key=lambda item: item['utc_date'])[:500])
@@ -1252,4 +1326,8 @@ def cancel_chat():
 
 
 if __name__ == '__main__':
-    app.run(debug=os.environ.get('FLASK_DEBUG') == '1')
+    from fixture_refresh import start_fixture_refresh
+    debug = os.environ.get('FLASK_DEBUG') == '1'
+    if not debug or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
+        start_fixture_refresh()
+    app.run(debug=debug)

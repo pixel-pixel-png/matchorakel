@@ -1,5 +1,6 @@
 """Importerade spelscheman från football-data.org (egen API-nyckel krävs)."""
 import json
+import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from pathlib import Path
@@ -7,6 +8,8 @@ from pathlib import Path
 from football import LEAGUES, ALIASES, clean_name, team_key
 
 PROVIDER = 'football-data.org'
+CUP_TEAM_ALIASES = {'gala': 'galatasaray', 'galatasaray sk': 'galatasaray',
+                    'galatasaray a s': 'galatasaray', 'galatasaray': 'galatasaray'}
 CUP_NAMES = {'UCL': 'Champions League', 'FAC': 'FA Cup', 'CDR': 'Copa del Rey',
              'EL': 'Europa League', 'UECL': 'Conference League',
              'DFB': 'DFB-Pokal', 'CIT': 'Coppa Italia'}
@@ -27,22 +30,36 @@ KNOWN_HOME_VENUES = {
 
 def read_fixtures(root: Path):
     path = root / 'data' / 'fixtures.json'
-    if not path.exists():
-        return []
+    payload = {}
     try:
-        payload = json.loads(path.read_text(encoding='utf-8'))
+        if path.exists():payload = json.loads(path.read_text(encoding='utf-8'))
     except (ValueError, OSError, UnicodeError):
-        return []
+        pass
     fixtures = payload.get('fixtures', []) if isinstance(payload, dict) else []
     if not isinstance(fixtures, list):
-        return []
-    return [item for item in fixtures if isinstance(item, dict) and
+        fixtures = []
+    # En daterad, källbelagd referens är bara fallback för redan spelade matcher.
+    reference = root / 'fixtures_reference.json'
+    try:
+        if reference.exists():
+            data = json.loads(reference.read_text(encoding='utf-8'))
+            if isinstance(data, dict) and isinstance(data.get('fixtures'), list):fixtures += data['fixtures']
+    except (ValueError, OSError, UnicodeError):pass
+    valid = [item for item in fixtures if isinstance(item, dict) and
             item.get('league') in (*LEAGUES, *CUP_NAMES) and
             isinstance(item.get('home'), str) and item['home'].strip() and
             isinstance(item.get('away'), str) and item['away'].strip() and
             isinstance(item.get('utc_date'), str) and fixture_time(item) is not None and
             isinstance(item.get('status'), str) and
             normalize_team(item['home'], item['league']) != normalize_team(item['away'], item['league'])]
+    merged = {}
+    for item in valid:
+        key = (item['league'], normalize_team(item['home'],item['league']),
+               normalize_team(item['away'],item['league']), fixture_time(item).date())
+        previous = merged.get(key)
+        if previous is None or str(item.get('synced_at','')) > str(previous.get('synced_at','')):
+            merged[key] = item
+    return list(merged.values())
 
 
 def read_venues(root: Path):
@@ -59,6 +76,8 @@ def read_venues(root: Path):
 def normalize_team(name, league):
     if league in CUP_NAMES:
         raw = clean_name(name)
+        raw = re.sub(r'^(?:fc|cf)\s+|\s+(?:fc|cf|afc)$', '', raw)
+        if raw in CUP_TEAM_ALIASES:return CUP_TEAM_ALIASES[raw]
         for code in LEAGUES:
             if raw in ALIASES[code]:
                 return ALIASES[code][raw]
@@ -115,7 +134,7 @@ def home_venue(root, league, home):
 
 def fixture_public(match, root=None):
     result = {key: match.get(key) for key in
-              ('league', 'home', 'away', 'utc_date', 'venue', 'status', 'synced_at', 'source', 'match_id', 'score')}
+              ('league', 'home', 'away', 'utc_date', 'venue', 'status', 'synced_at', 'source', 'source_url', 'match_id', 'score')}
     result['kickoff_confirmed'] = match.get('status') in ('TIMED', 'IN_PLAY', 'PAUSED', 'FINISHED')
     if not isinstance(result['venue'], str) or not result['venue'].strip():
         result['venue'] = None

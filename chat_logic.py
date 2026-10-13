@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from football import LEAGUES, clean_name, find_teams, team_display, recent_form
-from fixtures import CUP_NAMES, CUP_ALIASES, read_fixtures, normalize_team, fixture_time, fixture_public, display_fixture_date
+from fixtures import CUP_NAMES, CUP_ALIASES, CUP_TEAM_ALIASES, read_fixtures, normalize_team, fixture_time, fixture_public, display_fixture_date
 
 
 def language_of(message, history=None):
@@ -28,13 +28,31 @@ def resolve(message, context, web):
         if web.model_path(code).exists():
             found=find_teams(message, web.get_state(code)['teams'], code)
             hits.extend((code,team) for team in found)
+    plain=clean_name(message)
+    catalog = {}
+    for fixture in read_fixtures(web.ROOT):
+        for field in ('home','away'):
+            name=fixture[field];key=normalize_team(name,fixture['league'])
+            catalog.setdefault(key, (fixture['league'],set()))[1].update((clean_name(name),key))
+    for alias,key in CUP_TEAM_ALIASES.items():
+        catalog.setdefault(key, ('UCL',set()))[1].add(alias)
+    for key,(code,names) in catalog.items():
+        if key not in {t for _,t in hits} and any(re.search(r'\b'+re.escape(name)+r'\b',plain) for name in names):
+            hits.append((code,key))
+    if len(hits)==1 and re.search(r'\bunited\b',plain) and hits[0][1]!='man united':
+        opponents=set()
+        for f in read_fixtures(web.ROOT):
+            pair={normalize_team(f['home'],f['league']),normalize_team(f['away'],f['league'])}
+            if hits[0][1] in pair and 'man united' in pair:opponents.add((f['league'],'man united'))
+        if len(opponents)==1:hits.extend(opponents)
     if len(hits)==2 and hits[0][0]!=hits[1][0]:
         # find_teams across competitions loses order; aliases determine positions.
         from football import ALIASES
         plain=clean_name(message)
         def position(item):
             code,team=item
-            aliases=[team]+[a for a,c in ALIASES[code].items() if c==team]
+            aliases=[team]+[a for a,c in ALIASES.get(code,{}).items() if c==team]+[a for a,c in CUP_TEAM_ALIASES.items() if c==team]
+            if team=='man united':aliases.append('united')
             positions=[m.start() for a in aliases for m in re.finditer(r'\b'+re.escape(a)+r'\b',plain)]
             return min(positions,default=999)
         hits.sort(key=position)
@@ -96,7 +114,7 @@ def schedule_answer(message,ctx,hits,web,lang):
         return not home or normalize_team(home,code) in pair
     rows=[f for f in rows if involved(f)]
     now=datetime.now(timezone.utc)
-    past=bool(re.search(r'\b(slutade|vann|resultatet|finished|won|ended|result|spelades|igar|yesterday)\b',plain))
+    past=bool(re.search(r'\b(slutade|vann|resultat|resultatet|finished|won|ended|result|spelades|igar|yesterday)\b|hur gick|nar var|when was|vad blev det',plain))
     if re.search(r'\bdid\b.*\bfinish\b',plain):past=True
     date_match=re.search(r'\b(20\d{2}-\d{2}-\d{2})\b',message)
     target_day=None
@@ -107,8 +125,13 @@ def schedule_answer(message,ctx,hits,web,lang):
     if re.search(r'\b(idag|today)\b',plain):target_day=now.astimezone(ZoneInfo('Europe/Stockholm')).date()
     if re.search(r'\b(igar|yesterday)\b',plain):target_day=now.astimezone(ZoneInfo('Europe/Stockholm')).date()-timedelta(days=1)
     if target_day:rows=[f for f in rows if (fixture_time(f).astimezone(ZoneInfo('Europe/Stockholm')) if f['status']!='SCHEDULED' else fixture_time(f)).date()==target_day]
+    matching=rows
     if past:rows=[f for f in rows if f['status']=='FINISHED']
+    elif target_day:rows=[f for f in rows if f['status'] in ('TIMED','SCHEDULED','POSTPONED','IN_PLAY','PAUSED','FINISHED')]
     else:rows=[f for f in rows if f['status'] in ('TIMED','SCHEDULED','POSTPONED','IN_PLAY','PAUSED') and (fixture_time(f)>=now or fixture_time(f).date()==now.date() or f['status']=='POSTPONED')]
+    if not rows and not target_day and home and away and not re.search(r'kommande|nasta|upcoming|next',plain):
+        rows=[f for f in matching if f['status']=='FINISHED' and timedelta(0)<=now-fixture_time(f)<=timedelta(days=2)]
+        if rows:past=True
     rows.sort(key=fixture_time,reverse=past)
     exact=[f for f in rows if home and away and normalize_team(f['home'],code)==normalize_team(home,code)]
     if exact:rows=exact
@@ -118,6 +141,7 @@ def schedule_answer(message,ctx,hits,web,lang):
         return text((f'Jag hittar ingen {"registrerad spelad" if past else "kommande"} match{time_note} för {pair or CUP_NAMES.get(code,LEAGUES.get(code,{}).get("name","tävlingen"))} i det hämtade schemat.' if lang=='sv' else f'No {"completed" if past else "upcoming"} match{time_note} for {pair or "this competition"} is available in the downloaded schedule.'),ctx,lang)
     chosen=rows[:5] if not (home and away) else rows[:1]
     selected=chosen[0];note=''
+    if selected['status']=='FINISHED':note='Matchen är redan spelad.' if lang=='sv' else 'The match has finished.'
     if home and away and not exact:
         note=(f'I schemat är {selected["home"]} hemmalag.' if lang=='sv' else f'The schedule lists {selected["home"]} at home.')
     if selected['status']=='POSTPONED':
@@ -166,7 +190,7 @@ def route_question(message,context,history,web):
         return text('Jag saknar en modell för ligavinnare och aktuell tabell med återstående matcher. Mina prognoser gäller enskilda matcher.' if lang=='sv' else 'I have no league-winner model or current table with remaining fixtures. My predictions cover individual matches.',ctx,lang)
     forecast_query=bool(re.search(r'\b(vinner|prognos|prediction|predict|prediktion|slutar|slutresultat|tippar|tippa|resultattips|vinstchans|win|wins|scoreline|forecast|will.*end)\b',plain) or plain in ('vad tror du','vad tror du da','what do you think','hur manga mal da') or re.search(r'hur manga mal (blir|tror)|samma sak|same (match|prediction)|how many goals (will|do you)|hur manga mal gor',plain))
     if re.search(r'\bvad (tror|tippar) du$',plain):forecast_query=True
-    schedule_query=bool(re.search(r'\b(spelades|nar|when|where|datum|date|avspark|kickoff|arena|venue|stadium|stadion|spelschema|schedule|kommande|upcoming|imorgon|tomorrow|idag|today|slutade|vann|finished|won|result|igar|yesterday)\b|\bvar spelas\b|\bvar spelar\b|\bvilken tid\b|\bnasta match',plain))
+    schedule_query=bool(re.search(r'\b(spelades|nar|when|where|datum|date|avspark|kickoff|arena|venue|stadium|stadion|spelschema|schedule|kommande|upcoming|imorgon|tomorrow|idag|today|slutade|vann|finished|won|result|resultat|resultatet|igar|yesterday)\b|\bvar spelas\b|\bvar spelar\b|\bvilken tid\b|\bnasta match|hur gick|vad blev det',plain))
     if re.search(r'press|anfall|attack|defend|forsvar',plain) and not re.search(r'datum|avspark|kickoff|arena|venue|tomorrow|imorgon',plain):
         schedule_query=False
     if schedule_query:
@@ -184,17 +208,34 @@ def route_question(message,context,history,web):
         facts['prediction']={k:prediction[k] for k in ('home','away','scoreline','probabilities','goal_markets','as_of')}
     from football import ALIASES
     remainder = plain
-    club_names = [alias for code,team in hits for alias in [team,*[a for a,t in ALIASES[code].items() if t==team]]]
+    club_names = [alias for code,team in hits for alias in [team,*[a for a,t in ALIASES.get(code,{}).items() if t==team],*[a for a,t in CUP_TEAM_ALIASES.items() if t==team]]]
+    if any(team=='man united' for _,team in hits):club_names.append('united')
     for name in sorted(club_names,key=len,reverse=True):
         remainder=re.sub(r'\b'+re.escape(name)+r'\b',' ',remainder)
     for code in explicit:
         for name in CUP_ALIASES.get(code,(clean_name(LEAGUES.get(code,{}).get('name','')),)):
             if name:remainder=re.sub(r'\b'+re.escape(name)+r'\b',' ',remainder)
     remainder=re.sub(r'\b(mot|vs|v|moter|hemma|borta|home|away|at|against|och|and|i|in|fc|cf)\b',' ',remainder).strip()
-    typo_only = bool(remainder) and all(any(find_teams(word,web.get_state(code)['teams'],code) for code,_ in hits) for word in remainder.split())
+    typo_only = bool(remainder) and all(any(find_teams(word,web.get_state(code)['teams'],code) for code,_ in hits if code in LEAGUES and web.model_path(code).exists()) for word in remainder.split())
     short_pair=pair and len(hits)==2 and (not remainder or typo_only)
     if (forecast_query or short_pair) and not re.search(r'\b(skott|shots|kort|cards|malskytt|scorer|injured|skadad)\b|vem.*gor mal|who.*score',plain):
         if not pair:return text('Vilka två lag vill du ha en prediction för?' if lang=='sv' else 'Which two clubs should I predict?',ctx,lang)
+        now=datetime.now(timezone.utc)
+        completed=[f for f in read_fixtures(web.ROOT) if f['league']==ctx['league'] and f['status']=='FINISHED' and
+                   {normalize_team(f['home'],f['league']),normalize_team(f['away'],f['league'])}=={ctx['home'],ctx['away']} and
+                   timedelta(0)<=now-fixture_time(f)<=timedelta(days=2)]
+        if completed and not re.search(r'hypotetisk|hypothetical|teoretisk',plain):
+            f=max(completed,key=fixture_time)
+            actual={'league':f['league'],'home':normalize_team(f['home'],f['league']),'away':normalize_team(f['away'],f['league'])}
+            return {'kind':'fixtures','fixtures':[fixture_public(f,web.ROOT)],'league':ctx['league'],'context':actual,'language':lang,
+                    'summary':'Matchen är redan spelad. Här är det registrerade resultatet.' if lang=='sv' else 'The match has finished. Here is the recorded result.'}
+        underway=[f for f in read_fixtures(web.ROOT) if f['league']==ctx['league'] and f['status'] in ('TIMED','IN_PLAY','PAUSED') and
+                  {normalize_team(f['home'],f['league']),normalize_team(f['away'],f['league'])}=={ctx['home'],ctx['away']} and
+                  timedelta(0)<=now-fixture_time(f)<=timedelta(hours=6)]
+        if underway and not re.search(r'hypotetisk|hypothetical|teoretisk',plain):
+            f=max(underway,key=fixture_time)
+            return {'kind':'fixtures','fixtures':[fixture_public(f,web.ROOT)],'league':ctx['league'],'context':ctx,'language':lang,
+                    'summary':'Avspark har passerat. Jag har ingen liveprognos eller bekräftat slutresultat för matchen.' if lang=='sv' else 'Kickoff has passed. I have no live prediction or confirmed final result for this match.'}
         if ctx['league'] in CUP_NAMES:
             cup_fixture = next((f for f in read_fixtures(web.ROOT) if f['league']==ctx['league'] and normalize_team(f['home'],ctx['league'])==normalize_team(ctx['home'],ctx['league']) and normalize_team(f['away'],ctx['league'])==normalize_team(ctx['away'],ctx['league']) and f['status'] in ('TIMED','SCHEDULED') and fixture_time(f)>datetime.now(timezone.utc)), None)
             match = cup_fixture or {'league':ctx['league'],'home':ctx['home'],'away':ctx['away'],'utc_date':None,'status':None}
@@ -226,7 +267,7 @@ def route_question(message,context,history,web):
             explanation='Om den spelaren saknas kan laget behöva ändra anfallsvägar och fördela avsluten annorlunda. Jag har ingen bekräftad frånvaro eller ersättarstatistik, så prognossiffrorna ändras inte.' if lang=='sv' else 'If that player is absent, attacking routes and shot distribution may change. Absence and replacement data are unverified, so the numerical prediction stays unchanged.'
         else:explanation='Jag saknar aktuell spelarhistorik, startelva och förväntade minuter för att välja en målskytt. Lagets målprognos räcker inte för att fördela målchanser mellan spelare.' if lang=='sv' else 'Current player history, lineups and expected minutes are missing, so I cannot pick a scorer from the team goal forecast alone.'
         return text(explanation,ctx,lang)
-    if metric and targets and not re.search(r'\b(over|under|minst|far|blir|kommer|will|at least)\b',plain):
+    if metric and targets and not re.search(r'\b(over|under|minst|hogst|far|blir|kommer|will|at least|at most)\b',plain):
         label=('skott på mål' if metric=='shots_on_target' else 'gula kort') if lang=='sv' else ('shots on target' if metric=='shots_on_target' else 'yellow cards')
         lines=[]
         for row in targets:
@@ -237,6 +278,12 @@ def route_question(message,context,history,web):
             else:lines.append(f'{row["name"]}: {label} saknas i underlaget.' if lang=='sv' else f'{row["name"]}: {label} are unavailable.')
         return text(' '.join(lines),ctx,lang)
     if re.search(r'\b(andra halvlek|second half|first half|forsta halvlek)\b',plain):return text('Jag har helmatchdata men ingen separat halvleksmodell. Helmatchens målprognos kan inte delas jämnt mellan halvlekarna.' if lang=='sv' else 'I have full-match data but no half-specific model. The full-match goal forecast cannot simply be split in half.',ctx,lang)
+    if ctx and ctx['league'] in CUP_NAMES and pair and not re.search(r'offside|regler|rules|press|taktik|tactics',plain):
+        matches=[f for f in read_fixtures(web.ROOT) if f['league']==ctx['league'] and
+                 {normalize_team(f['home'],f['league']),normalize_team(f['away'],f['league'])}=={ctx['home'],ctx['away']}]
+        selected=sorted(matches,key=fixture_time,reverse=True)[:1] or [{'league':ctx['league'],'home':ctx['home'],'away':ctx['away'],'utc_date':None,'venue':None}]
+        answer=web.ucl_evidence(selected,message,ctx['league']);answer['context']=ctx;answer['language']=lang
+        return answer
     advanced=bool(re.search(r'\b(offside|press|pressmonster|pressing|formation|taktik|tactics|transfers?|tranare|coach|tabell|table|xg|bollinnehav|possession|regler|rules|frispark|falsk nia|counterattack|omstallning)\b',plain))
     if advanced or not ctx:
         explanation=web.general_answer(message,{} if not ctx else facts,history,general=not ctx)

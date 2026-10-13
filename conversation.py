@@ -62,6 +62,10 @@ def intent(message):
 def suggestions(answer, history=None, question=''):
     if answer.get('topic_reset'):
         return []
+    fixtures=answer.get('fixtures',[]) if isinstance(answer.get('fixtures'),list) else []
+    if isinstance(answer.get('fixture'),dict):fixtures=fixtures+[answer['fixture']]
+    if any(f.get('status') in ('FINISHED','IN_PLAY','PAUSED') for f in fixtures if isinstance(f,dict)):
+        return []
     context = answer.get('context') or {}
     league = context.get('league')
     home, away = context.get('home'), context.get('away')
